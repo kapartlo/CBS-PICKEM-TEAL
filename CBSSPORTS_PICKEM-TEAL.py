@@ -19,7 +19,7 @@ st.subheader("10,000 Monte Carlo Simulations via ESPN & Spreads")
 # =========================================================
 @st.cache_data(ttl=300) # Cache the sheet download for 5 minutes
 def load_excel_from_shared_drive():
-    # 🔴 Replace with your actual Google Drive File ID from your URL
+    # 🔴 Replace with your actual Google Drive File ID for 'CBSSPORTS Pickem Weekly Picks.xlsx'
     FILE_ID = '123_YOUR_EXCEL_FILE_ID_HERE'
     SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
@@ -338,11 +338,9 @@ else:
     sim_results['Best Rooting Interests'] = leverage_swings_list
     sim_results['Proj 1st Place %'] = sim_results['Simulated Weekly 1st Place %']
 
-    # Sort results
     final_df = sim_results.sort_values(by='Proj Pts', ascending=False).reset_index(drop=True)
     final_df.index += 1
     
-    # Display Beautifully in Streamlit App
     st.dataframe(
         final_df[[
             'Player', 'Games Completed', 'Locked Pts', 'Current Pts', 
@@ -354,4 +352,3 @@ else:
         }), 
         use_container_width=True
     )
-  print('=' * 170 + '\n')
