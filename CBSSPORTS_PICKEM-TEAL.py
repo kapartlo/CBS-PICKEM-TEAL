@@ -20,7 +20,7 @@ st.subheader("10,000 Monte Carlo Simulations via ESPN & Spreads")
 @st.cache_data(ttl=300) # Cache the sheet download for 5 minutes
 def load_excel_from_shared_drive():
     # 🔴 Replace with your actual Google Drive File ID
-    FILE_ID = '123_YOUR_EXCEL_FILE_ID_HERE'
+    FILE_ID = 'CBSSPORTS Pickem Weekly Picks.xlsx'
     SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
     try:
