@@ -19,13 +19,21 @@ st.subheader("10,000 Monte Carlo Simulations via ESPN & Spreads")
 # =========================================================
 @st.cache_data(ttl=300) # Cache the sheet download for 5 minutes
 def load_excel_from_shared_drive():
-    # 🔴 Replace with your actual Google Drive File ID for 'CBSSPORTS Pickem Weekly Picks.xlsx'
+    # 🔴 Replace with your actual Google Drive File ID
     FILE_ID = '123_YOUR_EXCEL_FILE_ID_HERE'
     SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
     try:
         # Authenticates securely using your Streamlit secrets
-        service_account_info = st.secrets["gcp_service_account"]
+        service_account_info = dict(st.secrets["gcp_service_account"])
+        
+        # 🔧 Clean the private key to fix "Invalid JWT Signature" issues dynamically
+        if "private_key" in service_account_info:
+            raw_key = service_account_info["private_key"]
+            # Standardize escaped newlines
+            clean_key = raw_key.replace("\\n", "\n").strip()
+            service_account_info["private_key"] = clean_key
+
         creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
         service = build('drive', 'v3', credentials=creds)
 
