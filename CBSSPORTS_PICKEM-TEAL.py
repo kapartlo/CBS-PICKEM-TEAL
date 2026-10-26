@@ -1,13 +1,7 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import scipy.stats as stats
 import io
-import re
-import itertools
-import matplotlib.pyplot as plt
-import seaborn as sns
-from google.oauth2.service_account import Credentials
+import pandas as pd
+import streamlit as st
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
@@ -16,33 +10,46 @@ st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simula
 # =========================================================
 # 1. GOOGLE DRIVE SECURE FILE DOWNLOADER
 # =========================================================
-@st.cache_data(ttl=300) # Cache data for 5 minutes to prevent hitting API limits
-def load_excel_from_shared_drive():
-    FILE_ID = '1by3okDqhmsITMO5Nig326OKOtJm-8Jw0'
-    SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
+@st.cache_data(ttl=600)  # Caches the data for 10 minutes to avoid hitting API limits
+def load_excel_from_gdrive():
+  # 1. Load credentials from Streamlit secrets
+  creds_dict = dict(st.secrets["connections"]["gdrive"])
+  creds = service_account.Credentials.from_service_account_info(
+      creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+  )
 
-    try:
-        # Authenticate using Streamlit Secrets
-        service_account_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
-        service = build('drive', 'v3', credentials=creds)
+  # 2. Build the Drive API client
+  service = build("drive", "v3", credentials=creds)
 
-        # Request and download
-        request = service.files().get_media(fileId=FILE_ID)
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
+  # 3. Replace with your actual Google Drive File ID
+  # (Found in the sharing link of your file: .../d/THIS_IS_THE_FILE_ID/view)
+  file_id = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"
 
-        done = False
-        while done is False:
-            status, done = downloader.next_chunk()
+  # 4. Download the file into memory
+  request = service.files().get_media(fileId=file_id)
+  file_buffer = io.BytesIO()
+  downloader = MediaIoBaseDownload(file_buffer, request)
 
-        fh.seek(0)
-        picks_df = pd.read_excel(fh)
-        return picks_df
-    except Exception as e:
-        st.error(f"❌ Failed to fetch file from Google Drive: {e}")
-        st.info("💡 Hint: Double-check that your Service Account email is shared as a 'Viewer' on your Google Drive Excel file!")
-        return None
+  done = False
+  while not done:
+    status, done = downloader.next_chunk()
+
+  file_buffer.seek(0)
+
+  # 5. Read into Pandas DataFrame using openpyxl for Excel files
+  df = pd.read_excel(file_buffer, sheet_name=0)  # Change sheet name if needed
+  return df
+
+
+# --- Run it in your app ---
+try:
+  df = load_excel_from_gdrive()
+  st.success("Successfully loaded data from private Google Drive!")
+  st.dataframe(df)
+except Exception as e:
+  st.error(f"Error loading file: {e}")
+
+   
 
 # =========================================================
 # 2. RUN SIMULATION & RENDER DASHBOARD
