@@ -57,7 +57,7 @@ except Exception as e:
 st.title("🏈 CBS Sports Pick'em Pool Monte Carlo Dashboard")
 st.write("Real-time win probabilities, projections, and customized rooting interests.")
 
-picks_df = load_excel_from_shared_drive()
+picks_df = load_excel_from_gdrive()
 
 if picks_df is not None:
     st.success("✅ Successfully loaded pool picks dynamically from Google Drive!")
