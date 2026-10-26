@@ -2,7 +2,6 @@
 import numpy as np
 import pandas as pd
 import requests
-from google.colab import userdata
 import itertools
 import scipy.stats as stats
 import re
