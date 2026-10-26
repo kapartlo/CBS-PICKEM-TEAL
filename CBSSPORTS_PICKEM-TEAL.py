@@ -9,84 +9,73 @@ import re
 from datetime import datetime, timedelta, timezone
 
 # =========================================================
-# 1. DYNAMICALLY LOAD ALL_POOL_PICKS (WEB-FIRST / EXCEL FALLBACK)
+# 1. SECURELY LOAD ALL_POOL_PICKS VIA GOOGLE DRIVE API
 # =========================================================
-EXCEL_FILE_PATH = '/content/drive/MyDrive/Colab Notebooks/CBSSPORTS PICKEM Files/CBSSPORTS Pickem Weekly Picks.xlsx'
+import io
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
-if 'ALL_POOL_PICKS' not in globals() or not ALL_POOL_PICKS:
-    ALL_POOL_PICKS = {}
+def load_excel_from_shared_drive():
+    # 🔴 Paste your actual Google Drive File ID between the single quotes below
+    FILE_ID = '123_YOUR_EXCEL_FILE_ID_HERE'
+    SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
-    if 'SHEET_CSV_URL' in globals() and SHEET_CSV_URL:
-        print("⏳ Attempting to load picks from your Google Sheets Web Link...")
-        try:
-            picks_df = pd.read_csv(SHEET_CSV_URL)
-            parsed_picks = {}
-            game_cols = [col for col in picks_df.columns if any(day in str(col) for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat'])]
+    try:
+        # Authenticates securely using the Streamlit secrets you just added
+        service_account_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+        service = build('drive', 'v3', credentials=creds)
 
-            col_to_teams = {}
-            for col in game_cols:
-                match_val = str(picks_df.loc[0, col]).strip()
-                if pd.notna(match_val) and match_val != 'nan':
-                    col_to_teams[col] = match_val
+        request = service.files().get_media(fileId=FILE_ID)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
 
-            for index in range(1, len(picks_df)):
-                player_name = picks_df.loc[index, 'Players']
-                if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
-                    continue
-                player_name = str(player_name).strip()
-                player_name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
-                player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
 
-                parsed_picks[player_name] = {}
-                for col, match_str in col_to_teams.items():
-                    pick_val = str(picks_df.loc[index, col]).strip()
-                    if pd.notna(pick_val) and '(' in pick_val and ')' in pick_val:
-                        match = re.match(r"([A-Za-z]+)\((\d+)\)", pick_val)
-                        if match:
-                            team = match.group(1).upper()
-                            points = int(match.group(2))
-                            parsed_picks[player_name][team] = points
-            ALL_POOL_PICKS = parsed_picks
-            print(f"SUCCESS: Loaded {len(ALL_POOL_PICKS)} players from Google Sheet Web Link!")
-        except Exception as e:
-            print(f"★ Google Sheets Web Link loading failed: {e}. Falling back to local Drive...")
+        fh.seek(0)
+        picks_df = pd.read_excel(fh)
+        return picks_df
+    except Exception as e:
+        st.error(f"❌ Failed to fetch file from Google Drive: {e}")
+        return None
 
-    if not ALL_POOL_PICKS:
-        try:
-            picks_df = pd.read_excel(EXCEL_FILE_PATH)
-            parsed_picks = {}
-            game_cols = [col for col in picks_df.columns if any(day in str(col) for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat'])]
+# Execute the secure Google Drive loader
+picks_df = load_excel_from_shared_drive()
+ALL_POOL_PICKS = {}
+col_to_teams = {}
 
-            col_to_teams = {}
-            for col in game_cols:
-                match_val = str(picks_df.loc[0, col]).strip()
-                if pd.notna(match_val) and match_val != 'nan':
-                    col_to_teams[col] = match_val
+if picks_df is not None:
+    try:
+        game_cols = [col for col in picks_df.columns if any(day in str(col) for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat'])]
 
-            for index in range(1, len(picks_df)):
-                player_name = picks_df.loc[index, 'Players']
-                if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
-                    continue
-                player_name = str(player_name).strip()
-                player_name = re.sub(r'^	*\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
-                player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
+        for col in game_cols:
+            match_val = str(picks_df.loc[0, col]).strip()
+            if pd.notna(match_val) and match_val != 'nan':
+                col_to_teams[col] = match_val
 
-                parsed_picks[player_name] = {}
-                for col, match_str in col_to_teams.items():
-                    pick_val = str(picks_df.loc[index, col]).strip()
-                    if pd.notna(pick_val) and '(' in pick_val and ')' in pick_val:
-                        match = re.match(r"([A-Za-z]+)\((\d+)\)", pick_val)
-                        if match:
-                            team = match.group(1).upper()
-                            points = int(match.group(2))
-                            parsed_picks[player_name][team] = points
-            ALL_POOL_PICKS = parsed_picks
-            print(f"Successfully parsed picks for {len(ALL_POOL_PICKS)} players from Excel!")
-        except Exception as e:
-            print(f"Error loading/parsing Excel file: {e}. Falling back to default empty state.")
-            ALL_POOL_PICKS = {}
-else:
-    print(f"Using {len(ALL_POOL_PICKS)} players currently loaded in memory.")
+        for index in range(1, len(picks_df)):
+            player_name = picks_df.loc[index, 'Players']
+            if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
+                continue
+            player_name = str(player_name).strip()
+            player_name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
+            player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
+
+            ALL_POOL_PICKS[player_name] = {}
+            for col, match_str in col_to_teams.items():
+                pick_val = str(picks_df.loc[index, col]).strip()
+                if pd.notna(pick_val) and '(' in pick_val and ')' in pick_val:
+                    match = re.match(r"([A-Za-z]+)\((\d+)\)", pick_val)
+                    if match:
+                        team = match.group(1).upper()
+                        points = int(match.group(2))
+                        ALL_POOL_PICKS[player_name][team] = points
+        st.success(f"Successfully parsed picks for {len(ALL_POOL_PICKS)} players from Google Drive!")
+    except Exception as e:
+        st.error(f"❌ Error parsing Excel structure: {e}")
 
 # =========================================================
 # 2. FREE ESPN API MULTI-WEEK SEARCH FOR ALIGNMENT
