@@ -16,44 +16,25 @@ st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simula
 
 @st.cache_data(ttl=600)
 def load_excel_from_gdrive():
-  # 1. Grab credentials dictionary from secrets
-  creds_dict = dict(st.secrets["connections"]["gdrive"])
+  # 1. Decode the Base64 secret from the root level
+  creds_json = base64.b64decode(st.secrets["gdrive_b64"]).decode("utf-8")
+  creds_dict = json.loads(creds_json)
 
-  # 2. FIX LITERAL \n CHARACTERS FIRST
-  raw_key = creds_dict["private_key"]
-
-  # Convert literal \n text into actual Python newlines
-  raw_key = raw_key.replace("\\n", "\n").replace("\\r", "\r")
-
-  # Strip out headers, footers, and all whitespace to isolate the raw body
-  body_only = re.sub(r"-----(BEGIN|END) PRIVATE KEY-----", "", raw_key)
-  body_only = "".join(body_only.split())  # Removes all spaces and newlines
-
-  # Re-chunk the key cleanly into standard 64-character lines with real newlines
-  chunks = [body_only[i : i + 64] for i in range(0, len(body_only), 64)]
-  formatted_key = (
-      "-----BEGIN PRIVATE KEY-----\n"
-      + "\n".join(chunks)
-      + "\n-----END PRIVATE KEY-----\n"
-  )
-
-  creds_dict["private_key"] = formatted_key
-
-  # 3. Write to a secure temporary file
+  # 2. Write to a secure temporary file for Google's auth loader
   with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp:
     json.dump(creds_dict, temp)
     temp_path = temp.name
 
-  # 4. Authenticate using the temporary file
+  # 3. Authenticate cleanly using the temporary file path
   creds = service_account.Credentials.from_service_account_file(
       temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
   )
   service = build("drive", "v3", credentials=creds)
 
-  # 5. Your Google Drive File ID
+  # 4. Your Google Drive File ID (Replace with your actual file ID string)
   file_id = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"  
 
-  # 6. Download and read the file into Pandas
+  # 5. Download the file buffer from Google Drive and load into Pandas
   request = service.files().get_media(fileId=file_id)
   file_buffer = io.BytesIO()
   downloader = MediaIoBaseDownload(file_buffer, request)
@@ -67,13 +48,12 @@ def load_excel_from_gdrive():
   return df
 
 
-# Call it once to populate your dataframe variable
+# Load your dataframe
 picks_df = load_excel_from_gdrive()
 
-
-
- 
-
+# Quick sanity check display
+st.write("Data successfully loaded!")
+st.dataframe(picks_df)
 
 
    
