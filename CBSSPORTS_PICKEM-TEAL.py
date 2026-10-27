@@ -15,6 +15,19 @@ from googleapiclient.http import MediaIoBaseDownload
 
 st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simulation")
 
+# Compact styling for mobile landscape view
+st.markdown(
+    """
+    <style>
+        .block-container { padding-top: 1rem; padding-bottom: 1rem; }
+        h1 { font-size: 1.6rem !important; margin-bottom: 0.2rem !important; }
+        h3 { font-size: 1.2rem !important; margin-top: 0.8rem !important; margin-bottom: 0.4rem !important; }
+        p { margin-bottom: 0.4rem !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # =========================================================
 # 1. GOOGLE DRIVE SECURE FILE DOWNLOADER
@@ -115,11 +128,8 @@ picks_df = load_excel_from_gdrive()
 # 3. RUN SIMULATION & RENDER DASHBOARD
 # =========================================================
 st.title("🏈 CBS Sports Pick'em Pool Monte Carlo Dashboard")
-st.write("Real-time win probabilities, projections, and customized rooting interests.")
 
 if picks_df is not None:
-    st.success("✅ Successfully loaded pool picks dynamically from Google Drive!")
-
     # Parse Picks dictionary mapping
     parsed_picks = {}
     game_cols = [
@@ -202,15 +212,14 @@ if picks_df is not None:
         )
         max_pts_list.append(max_possible_points)
 
-    # Build Simulation Results Dataframe
+    # Build Condensed Dataframe for Mobile / Landscape Visibility
     sim_results = pd.DataFrame({
         'Player': players,
-        'Games Completed': f"{completed_games_count}/{total_games}",
-        'Locked Pts': locked_pts_list,
-        'Current Pts': current_pts_list,
-        'Proj CBS Sports Pts': cbs_score_pts_list,
-        'Proj Pts': projected_pts_list,
-        'Max Pts (All Picks Win)': max_pts_list,
+        'Done': f"{completed_games_count}/{total_games}",
+        'Current': current_pts_list,
+        'CBS Proj': cbs_score_pts_list,
+        'Proj Pts': np.round(projected_pts_list, 1),
+        'Max Pts': max_pts_list,
     })
 
     # =========================================================
@@ -262,16 +271,30 @@ if picks_df is not None:
         weekly_winners = weekly_points == max_weekly_scores
         weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
         total_weekly_wins = np.sum(weekly_win_shares, axis=1)
-        sim_results['Simulated Win %'] = total_weekly_wins / N_SIMS * 100
+        sim_results['Win %'] = np.round((total_weekly_wins / N_SIMS) * 100, 1)
     else:
-        sim_results['Simulated Win %'] = 0.0
+        sim_results['Win %'] = 0.0
 
-    # Display Interactive DataFrame & Link
-    st.subheader("📊 Live Standing & Win Probability Projections")
+    # Display Interactive DataFrame with Condensed Columns
+    st.subheader("📊 Live Standings & Win Projections")
     sorted_results = sim_results.sort_values(
         by='Proj Pts', ascending=False
     ).reset_index(drop=True)
-    st.dataframe(sorted_results, use_container_width=True)
+
+    st.dataframe(
+        sorted_results,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Player": st.column_config.TextColumn("Player", width="medium"),
+            "Done": st.column_config.TextColumn("Done", width="small"),
+            "Current": st.column_config.NumberColumn("Current", width="small", format="%d"),
+            "CBS Proj": st.column_config.NumberColumn("CBS Proj", width="small", format="%d"),
+            "Proj Pts": st.column_config.NumberColumn("Proj Pts", width="small", format="%.1f"),
+            "Max Pts": st.column_config.NumberColumn("Max Pts", width="small", format="%d"),
+            "Win %": st.column_config.NumberColumn("Win %", width="small", format="%.1f%%"),
+        },
+    )
 
     st.markdown(
         "[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)"
@@ -281,14 +304,13 @@ if picks_df is not None:
     # 5. CHART PLOTTING (Compact Horizontal & Highlighted Projections)
     # =========================================================
     st.subheader("📈 Projected vs Current Performance")
-    fig, ax = plt.subplots(figsize=(6, 4.5))
+    fig, ax = plt.subplots(figsize=(6, 4))
 
     plot_df = (
         sorted_results.head(15)
-        .melt(id_vars=['Player'], value_vars=['Current Pts', 'Proj Pts'])
+        .melt(id_vars=['Player'], value_vars=['Current', 'Proj Pts'])
     )
 
-    # Palette: Muted Slate Gray for Current, Vibrant Cyan/Teal to highlight Projections
     sns.barplot(
         data=plot_df,
         x='value',
@@ -298,14 +320,12 @@ if picks_df is not None:
         palette=['#95a5a6', '#00cec9'],
     )
 
-    # Clean up axes and fonts
     ax.tick_params(axis='y', labelsize=8)
     ax.tick_params(axis='x', labelsize=8)
     ax.set_ylabel('Player', fontsize=9)
     ax.set_xlabel('Points', fontsize=9)
     ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
 
-    # Add data labels neatly to the right of the bars
     for container in ax.containers:
         ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
 
