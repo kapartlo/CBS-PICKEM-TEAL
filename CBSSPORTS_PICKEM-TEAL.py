@@ -209,7 +209,7 @@ if picks_df is not None:
     # 4. CHART PLOTTING
     # =========================================================
     st.subheader("📈 Projected vs Current Performance")
-    fig, ax = plt.subplots(figsize=(8.5, 4.2))
+    fig, ax = plt.subplots(figsize=(6, 3))
     plot_df = sorted_results.head(15).melt(id_vars=['Player'], value_vars=['Current Pts', 'Proj Pts'])
     sns.barplot(data=plot_df, x='Player', y='value', hue='variable', ax=ax, palette=['#2c3e50', '#1abc9c'])
     plt.xticks(rotation=45, ha='right')
