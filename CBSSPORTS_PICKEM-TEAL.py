@@ -274,6 +274,18 @@ if picks_df is not None:
   ).reset_index(drop=True)
   st.dataframe(sorted_results, use_container_width=True)
 
+  # Display Interactive DataFrame
+    st.subheader("📊 Live Standing & Win Probability Projections")
+    sorted_results = sim_results.sort_values(
+        by='Proj Pts', ascending=False
+    ).reset_index(drop=True)
+    st.dataframe(sorted_results, use_container_width=True)
+
+    # Generic link for all pool members
+    st.markdown(
+        "[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)"
+    )
+
   # =========================================================
   # 5. CHART PLOTTING (Compact Horizontal & Highlighted Projections)
   # =========================================================
