@@ -209,15 +209,11 @@ if picks_df is not None:
     # 4. CHART PLOTTING
     # =========================================================
 st.subheader("📈 Projected vs Current Performance")
-
-# 50% of original size (12x6 -> 6x3)
 fig, ax = plt.subplots(figsize=(6, 3))
-
 plot_df = (
     sorted_results.head(15)
     .melt(id_vars=["Player"], value_vars=["Current Pts", "Proj Pts"])
 )
-
 sns.barplot(
     data=plot_df,
     x="Player",
@@ -226,17 +222,10 @@ sns.barplot(
     ax=ax,
     palette=["#2c3e50", "#1abc9c"],
 )
-
-# Scaled-down fonts for 50% size
 plt.xticks(rotation=45, ha="right", fontsize=8)
 plt.yticks(fontsize=8)
-plt.xlabel("Player", fontsize=9)
 plt.ylabel("Points", fontsize=9)
-plt.title("Projected vs Current Performance", fontsize=10)
-
-# Shrink legend font as well
 ax.legend(fontsize=8, title_fontsize=8)
-
 plt.tight_layout()
 st.pyplot(fig)
     plt.ylabel("Points")
