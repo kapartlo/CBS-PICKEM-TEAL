@@ -442,12 +442,10 @@ sns.barplot(
     palette=["#2c3e50", "#1abc9c"],
 )
 
-# Clean up layout and rotate player labels slightly if needed
 plt.xticks(rotation=45, ha="right")
 plt.xlabel("Player")
 plt.ylabel("Points")
 plt.title("Projected vs Current Performance")
 plt.tight_layout()
 
-# Render cleanly inside Streamlit
 st.pyplot(fig)
