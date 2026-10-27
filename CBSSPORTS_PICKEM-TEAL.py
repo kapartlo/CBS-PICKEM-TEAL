@@ -208,7 +208,15 @@ if picks_df is not None:
     # =========================================================
     # 4. CHART PLOTTING
     # =========================================================
-# Scale down the figure size (e.g., width=10, height=4.5)
+# Build the plot_df from your source data (adjust column names if needed)
+plot_df = picks_df.melt(
+    id_vars=["Player"],
+    value_vars=["Current Pts", "Proj Pts"],
+    var_name="variable",
+    value_name="value",
+)
+
+# Scale down the figure size
 fig, ax = plt.subplots(figsize=(10, 4.5))
 
 sns.barplot(
