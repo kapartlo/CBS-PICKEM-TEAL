@@ -271,27 +271,4 @@ if picks_df is not None:
         sim_wins_dict[t2] = wins_t2
 
     weekly_points = np.zeros((n_players, N_SIMS))
-    for p_idx, player in enumerate(players):
-        locked_part = locked_pts_list[p_idx]
-        weekly_points[p_idx, :] = locked_part
-        for t_idx, team in enumerate(unresolved_teams):
-            picks_val = parsed_picks[player].get(team, 0)
-            weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
-
-    if N_SIMS > 0 and weekly_points.shape[1] > 0:
-        max_weekly_scores = np.max(weekly_points, axis=0)
-        weekly_winners = weekly_points == max_weekly_scores
-        weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
-        total_weekly_wins = np.sum(weekly_win_shares, axis=1)
-        sim_results['Sim Win%'] = np.round((total_weekly_wins / N_SIMS) * 100, 1)
-    else:
-        sim_results['Sim Win%'] = 0.0
-
-    # Display Interactive DataFrame with Narrow, Centered Columns
-    st.subheader("📊 Live Standings & Win Projections")
-    sorted_results = sim_results.sort_values(
-        by='Proj Pts', ascending=False
-    ).reset_index(drop=True)
-
-    st.dataframe(
-        sorted_results,
+    for p_idx, player in enumerate
