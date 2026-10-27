@@ -451,5 +451,3 @@ plt.tight_layout()
 
 # Render cleanly inside Streamlit
 st.pyplot(fig)
-    plt.ylabel("Points")
-    st.pyplot(fig)t(fig)
