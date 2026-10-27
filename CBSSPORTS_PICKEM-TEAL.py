@@ -13,16 +13,6 @@ st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simula
 # 1. GOOGLE DRIVE SECURE FILE DOWNLOADER
 # =========================================================
 
-import io
-import json
-import tempfile
-import pandas as pd
-import streamlit as st
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-
-
 @st.cache_data(ttl=600)
 def load_excel_from_gdrive():
   # 1. Grab credentials dictionary from secrets
@@ -47,6 +37,10 @@ def load_excel_from_gdrive():
     json.dump(creds_dict, temp)
     temp_path = temp.name
 
+  # Add this right before service_account.Credentials.from_service_account_file:
+  st.write("KEY START:", repr(creds_dict["private_key"][:40]))
+
+  
   # 4. Authenticate using the file method
   creds = service_account.Credentials.from_service_account_file(
       temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
@@ -68,6 +62,8 @@ def load_excel_from_gdrive():
   file_buffer.seek(0)
   df = pd.read_excel(file_buffer, sheet_name=0)
   return df
+
+
 
 # Call it once to populate your dataframe variable
 picks_df = load_excel_from_gdrive()
