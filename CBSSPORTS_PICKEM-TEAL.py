@@ -208,14 +208,6 @@ if picks_df is not None:
     # =========================================================
     # 4. CHART PLOTTING
     # =========================================================
-st.subheader("📈 Projected vs Current Performance")
-fig, ax = plt.subplots(figsize=(6, 4.5))
-
-plot_df = (
-    sorted_results.head(15)
-    .melt(id_vars=["Player"], value_vars=["Current Pts", "Proj Pts"])
-)
-
 # Custom palette: Muted gray for current points, vibrant teal/cyan for projected points
 st.subheader("📈 Projected vs Current Performance")
 fig, ax = plt.subplots(figsize=(6, 4.5))
@@ -225,14 +217,6 @@ plot_df = (
     .melt(id_vars=["Player"], value_vars=["Current Pts", "Proj Pts"])
 )
 
-# Custom palette: Muted gray for current points, vibrant teal/cyan for projected points
-st.subheader("📈 Projected vs Current Performance")
-fig, ax = plt.subplots(figsize=(6, 4.5))  # Compact height
-
-plot_df = (
-    sorted_results.head(15)
-    .melt(id_vars=["Player"], value_vars=["Current Pts", "Proj Pts"])
-)
 
 sns.barplot(
     data=plot_df,
