@@ -1,6 +1,6 @@
+import base64
 import io
 import json
-import re
 import tempfile
 import pandas as pd
 import streamlit as st
