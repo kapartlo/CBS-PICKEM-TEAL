@@ -209,7 +209,7 @@ if picks_df is not None:
     # 4. CHART PLOTTING
     # =========================================================
 st.subheader("📈 Projected vs Current Performance")
-fig, ax = plt.subplots(figsize=(12, 6))
+fig, ax = plt.subplots(figsize=(6, 3))
 
 plot_df = (
     sorted_results.head(15)
@@ -225,13 +225,16 @@ sns.barplot(
     palette=["#2c3e50", "#1abc9c"],
 )
 
-plt.xticks(rotation=45, ha="right")
-plt.ylabel("Points")
+# Perfectly angled names and scaled-down fonts
+plt.xticks(rotation=45, ha="right", fontsize=8)
+plt.yticks(fontsize=8)
+plt.xlabel("Player", fontsize=9)
+plt.ylabel("Points", fontsize=9)
+ax.legend(fontsize=8, title_fontsize=8)
 
 # Add data labels on top of all bars
 for container in ax.containers:
-  ax.bar_label(container, fmt="%.0f", padding=3, fontsize=8)
+  ax.bar_label(container, fmt="%.0f", padding=3, fontsize=7)
 
 plt.tight_layout()
 st.pyplot(fig)
-
