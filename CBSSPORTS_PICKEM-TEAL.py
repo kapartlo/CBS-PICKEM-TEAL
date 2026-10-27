@@ -226,16 +226,24 @@ plot_df = (
 )
 
 # Custom palette: Muted gray for current points, vibrant teal/cyan for projected points
+st.subheader("📈 Projected vs Current Performance")
+fig, ax = plt.subplots(figsize=(6, 4.5))  # Compact height
+
+plot_df = (
+    sorted_results.head(15)
+    .melt(id_vars=["Player"], value_vars=["Current Pts", "Proj Pts"])
+)
+
 sns.barplot(
     data=plot_df,
     x="value",
     y="Player",
     hue="variable",
     ax=ax,
-    palette=["#95a5a6", "#00cec9"],
+    palette=["#2c3e50", "#1abc9c"],
 )
 
-# Clean up axes and fonts for the compact footprint
+# Clean up axes and fonts for the smaller footprint
 ax.tick_params(axis="y", labelsize=8)
 ax.tick_params(axis="x", labelsize=8)
 ax.set_ylabel("Player", fontsize=9)
