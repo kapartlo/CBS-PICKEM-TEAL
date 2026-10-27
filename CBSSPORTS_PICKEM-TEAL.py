@@ -209,23 +209,24 @@ if picks_df is not None:
     # 4. CHART PLOTTING
     # =========================================================
 st.subheader("📈 Projected vs Current Performance")
-fig, ax = plt.subplots(figsize=(6, 8))  # Taller instead of wide for 15 players
+fig, ax = plt.subplots(figsize=(6, 4.5))
 
 plot_df = (
     sorted_results.head(15)
     .melt(id_vars=["Player"], value_vars=["Current Pts", "Proj Pts"])
 )
 
+# Custom palette: Muted gray for current points, vibrant teal/cyan for projected points
 sns.barplot(
     data=plot_df,
     x="value",
     y="Player",
     hue="variable",
     ax=ax,
-    palette=["#2c3e50", "#1abc9c"],
+    palette=["#95a5a6", "#00cec9"],
 )
 
-# Clean up axes and fonts
+# Clean up axes and fonts for the compact footprint
 ax.tick_params(axis="y", labelsize=8)
 ax.tick_params(axis="x", labelsize=8)
 ax.set_ylabel("Player", fontsize=9)
@@ -236,5 +237,7 @@ ax.legend(fontsize=8, title_fontsize=8, loc="lower right")
 for container in ax.containers:
   ax.bar_label(container, fmt="%.0f", padding=3, fontsize=7)
 
+plt.tight_layout()
+st.pyplot(fig)
 plt.tight_layout()
 st.pyplot(fig)
