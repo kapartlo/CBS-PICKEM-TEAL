@@ -244,11 +244,11 @@ sns.barplot(
 )
 
 # Clean up axes and fonts for the smaller footprint
-ax.tick_params(axis="y", labelsize=8)
-ax.tick_params(axis="x", labelsize=8)
-ax.set_ylabel("Player", fontsize=9)
-ax.set_xlabel("Points", fontsize=9)
-ax.legend(fontsize=8, title_fontsize=8, loc="lower right")
+ax.tick_params(axis="y", labelsize=6)
+ax.tick_params(axis="x", labelsize=6)
+ax.set_ylabel("Player", fontsize=7)
+ax.set_xlabel("Points", fontsize=7)
+ax.legend(fontsize=8, title_fontsize=6, loc="lower right")
 
 # Add data labels neatly to the right of the bars
 for container in ax.containers:
