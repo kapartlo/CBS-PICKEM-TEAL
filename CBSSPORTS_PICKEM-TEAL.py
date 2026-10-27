@@ -209,7 +209,7 @@ if picks_df is not None:
     # 4. CHART PLOTTING
     # =========================================================
 st.subheader("📈 Projected vs Current Performance")
-fig, ax = plt.subplots(figsize=(6, 4.5))
+fig, ax = plt.subplots(figsize=(5, 3))
 
 plot_df = (
     sorted_results.head(15)
@@ -239,5 +239,4 @@ for container in ax.containers:
 
 plt.tight_layout()
 st.pyplot(fig)
-plt.tight_layout()
-st.pyplot(fig)
+
