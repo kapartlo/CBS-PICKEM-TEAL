@@ -209,7 +209,7 @@ if picks_df is not None:
     # 4. CHART PLOTTING
     # =========================================================
 # Custom palette: Muted gray for current points, vibrant teal/cyan for projected points
-st.subheader("📈 Projected vs Current Performance")
+st.subheader("📈 Current vs Projected Points")
 fig, ax = plt.subplots(figsize=(6, 4.5))
 
 plot_df = (
