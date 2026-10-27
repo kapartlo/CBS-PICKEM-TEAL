@@ -150,4 +150,148 @@ if picks_df is not None:
 
     for index in range(1, len(picks_df)):
         player_name = picks_df.loc[index, 'Players']
-        if pd.isna(player_name) or str(player_name
+        if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
+            continue
+        player_name = str(player_name).strip()
+        player_name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
+        player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
+
+        parsed_picks[player_name] = {}
+        for col, match_str in col_to_teams.items():
+            pick_val = str(picks_df.loc[index, col]).strip()
+            if pd.notna(pick_val) and '(' in pick_val and ')' in pick_val:
+                match = re.match(r'([A-Za-z]+)\((\d+)\)', pick_val)
+                if match:
+                    team = match.group(1).upper()
+                    points = int(match.group(2))
+                    parsed_picks[player_name][team] = points
+
+    # Automatically fetch winners and probabilities from ESPN API
+    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP = (
+        fetch_espn_nfl_data()
+    )
+
+    # Math Setup
+    players = list(parsed_picks.keys())
+    n_players = len(players)
+    completed_games_count = len(COMPLETED_WINNERS)
+    total_games = len(col_to_teams)
+
+    locked_pts_list = []
+    projected_pts_list = []
+    cbs_score_pts_list = []
+    max_pts_list = []
+    root_for_list = []
+
+    pending_teams_in_slate = [
+        t for t, p in LIVE_PROBABILITIES.items() if p not in (1.0, 0.0)
+    ]
+
+    for p in players:
+        locked = sum(
+            parsed_picks[p].get(t, 0)
+            for t in COMPLETED_WINNERS
+            if t in parsed_picks[p]
+        )
+        locked_pts_list.append(locked)
+        cbs_score = locked
+        cbs_score_pts_list.append(cbs_score)
+
+        active_expected = sum(
+            parsed_picks[p].get(t, 0) * LIVE_PROBABILITIES.get(t, 0.5)
+            for t in LIVE_PROBABILITIES
+            if LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
+            and t in parsed_picks[p]
+        )
+        projected = locked + active_expected
+        projected_pts_list.append(projected)
+
+        max_possible_points = locked + sum(
+            parsed_picks[p].get(t, 0)
+            for t in pending_teams_in_slate
+            if t in parsed_picks[p]
+        )
+        max_pts_list.append(max_possible_points)
+
+        # Calculate Root For Teams (Pending picks with highest confidence points)
+        pending_picks = [
+            (t, parsed_picks[p].get(t, 0))
+            for t in pending_teams_in_slate
+            if t in parsed_picks[p]
+        ]
+        pending_picks.sort(key=lambda x: x[1], reverse=True)
+        top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
+        root_for_list.append(", ".join(top_roots) if top_roots else "-")
+
+    # Build Condensed Dataframe with Locked Pts & Centered Layout
+    sim_results = pd.DataFrame({
+        'Player': players,
+        'Games': f"{completed_games_count}/{total_games}",
+        'Locked Pts': locked_pts_list,
+        'CBS Proj': cbs_score_pts_list,
+        'Proj Pts': np.round(projected_pts_list, 1),
+        'Max': max_pts_list,
+        'Root For': root_for_list,
+    })
+
+    # =========================================================
+    # 4. RUN MONTE CARLO (10,000 SIMULATIONS)
+    # =========================================================
+    N_SIMS = 10000
+    pending_pairs = [
+        p for p in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(p[0], 0.5) not in (1.0, 0.0)
+    ]
+    unresolved_teams = []
+    for t1, t2 in pending_pairs:
+        unresolved_teams.extend([t1, t2])
+
+    np.random.seed(42)
+    sim_wins_dict = {}
+    sim_wins = np.zeros((N_SIMS, len(unresolved_teams)), dtype=bool)
+
+    for pair_idx, (t1, t2) in enumerate(pending_pairs):
+        prob_t1 = LIVE_PROBABILITIES.get(t1, 0.5)
+        prob_t2 = LIVE_PROBABILITIES.get(t2, 0.5)
+        tot_p = prob_t1 + prob_t2
+        if tot_p > 0:
+            prob_t1 = prob_t1 / tot_p
+
+        wins_t1 = np.random.rand(N_SIMS) < prob_t1
+        wins_t2 = ~wins_t1
+
+        try:
+            t1_idx = unresolved_teams.index(t1)
+            t2_idx = unresolved_teams.index(t2)
+            sim_wins[:, t1_idx] = wins_t1
+            sim_wins[:, t2_idx] = wins_t2
+        except ValueError:
+            pass
+
+        sim_wins_dict[t1] = wins_t1
+        sim_wins_dict[t2] = wins_t2
+
+    weekly_points = np.zeros((n_players, N_SIMS))
+    for p_idx, player in enumerate(players):
+        locked_part = locked_pts_list[p_idx]
+        weekly_points[p_idx, :] = locked_part
+        for t_idx, team in enumerate(unresolved_teams):
+            picks_val = parsed_picks[player].get(team, 0)
+            weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
+
+    if N_SIMS > 0 and weekly_points.shape[1] > 0:
+        max_weekly_scores = np.max(weekly_points, axis=0)
+        weekly_winners = weekly_points == max_weekly_scores
+        weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
+        total_weekly_wins = np.sum(weekly_win_shares, axis=1)
+        sim_results['Sim Win%'] = np.round((total_weekly_wins / N_SIMS) * 100, 1)
+    else:
+        sim_results['Sim Win%'] = 0.0
+
+    # Display Interactive DataFrame with Narrow, Centered Columns
+    st.subheader("📊 Live Standings & Win Projections")
+    sorted_results = sim_results.sort_values(
+        by='Proj Pts', ascending=False
+    ).reset_index(drop=True)
+
+    st.dataframe(
+        sorted_results,
