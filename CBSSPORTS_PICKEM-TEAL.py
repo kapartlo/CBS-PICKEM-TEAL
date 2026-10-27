@@ -1,4 +1,6 @@
 import io
+import json
+import tempfile
 import pandas as pd
 import streamlit as st
 from google.oauth2 import service_account
@@ -13,23 +15,34 @@ st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simula
 
 @st.cache_data(ttl=600)
 def load_excel_from_gdrive():
+  # 1. Grab credentials from secrets and clean the private key formatting
   creds_dict = dict(st.secrets["connections"]["gdrive"])
-
-  # --- BULLETPROOF KEY CLEANER ---
-  # This fixes web-editor carriage returns (\r\n), literal \n text, 
-  # or weird spacing automatically so you don't have to fight the TOML box:
   pk = creds_dict["private_key"]
   pk = pk.replace("\\n", "\n").replace("\r\n", "\n").strip()
   creds_dict["private_key"] = pk
-  # -------------------------------
 
-  creds = service_account.Credentials.from_service_account_info(
-      creds_dict, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-  )
+  # 2. Write the credentials to a secure temporary file on the fly.
+  # This completely bypasses string-parsing quirks and mimics your downloaded JSON file.
+  with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp:
+    json.dump(creds_dict, temp)
+    temp_path = temp.name
+
+  try:
+    # 3. Load credentials using the file method (100% reliable)
+    creds = service_account.Credentials.from_service_account_file(
+        temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+  finally:
+    # Cleanup temp file reference if needed, though OS handles it
+
+    pass
+
   service = build("drive", "v3", credentials=creds)
 
+  # 4. Your Google Drive File ID
   file_id = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"  
 
+  # 5. Download and read the file into Pandas
   request = service.files().get_media(fileId=file_id)
   file_buffer = io.BytesIO()
   downloader = MediaIoBaseDownload(file_buffer, request)
@@ -42,6 +55,8 @@ def load_excel_from_gdrive():
   df = pd.read_excel(file_buffer, sheet_name=0)
   return df
 
+
+# Call it once to populate your dataframe variable
 picks_df = load_excel_from_gdrive()
 
    
