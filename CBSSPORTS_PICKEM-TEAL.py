@@ -208,32 +208,12 @@ if picks_df is not None:
     # =========================================================
     # 4. CHART PLOTTING
     # =========================================================
-# Define your plot dataframe (replace 'picks_df' with your actual processed dataframe variable if different)
-plot_df = picks_df.melt(
-    id_vars=["Player"],
-    value_vars=["Current Pts", "Proj Pts"],
-    var_name="variable",
-    value_name="value",
-)
-
-# Render the resized, compact chart
-fig, ax = plt.subplots(figsize=(10, 4))
-
-sns.barplot(
-    data=plot_df,
-    x="Player",
-    y="value",
-    hue="variable",
-    ax=ax,
-    palette=["#2c3e50", "#1abc9c"],
-)
-
-plt.xticks(rotation=45, ha="right")
-plt.xlabel("Player")
-plt.ylabel("Points")
-plt.title("Projected vs Current Performance")
-plt.tight_layout()
-
-st.pyplot(fig)
+    st.subheader("📈 Projected vs Current Performance")
+    fig, ax = plt.subplots(figsize=(12, 6))
+    plot_df = sorted_results.head(15).melt(id_vars=['Player'], value_vars=['Current Pts', 'Proj Pts'])
+    sns.barplot(data=plot_df, x='Player', y='value', hue='variable', ax=ax, palette=['#2c3e50', '#1abc9c'])
+    plt.xticks(rotation=45, ha='right')
+    plt.ylabel("Points")
+    st.pyplot(fig)
 
 st.pyplot(fig)
