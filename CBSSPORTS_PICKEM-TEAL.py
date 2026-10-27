@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import tempfile
 import pandas as pd
 import streamlit as st
@@ -18,30 +19,32 @@ def load_excel_from_gdrive():
   # 1. Grab credentials dictionary from secrets
   creds_dict = dict(st.secrets["connections"]["gdrive"])
 
-  # 2. BULLETPROOF PRIVATE KEY CLEANER
-  pk = creds_dict["private_key"]
-  # Fix literal \n text escaping if present
-  pk = pk.replace("\\n", "\n")
-  # Strip carriage returns and extra spaces
-  pk = pk.replace("\r\n", "\n").strip()
-  
-  # Ensure the PEM header and footer are clean
-  if not pk.startswith("-----BEGIN PRIVATE KEY-----"):
-    # If quotes were accidentally included, strip them
-    pk = pk.strip('"').strip("'")
-    
-  creds_dict["private_key"] = pk
+  # 2. FIX LITERAL \n CHARACTERS FIRST
+  raw_key = creds_dict["private_key"]
 
-  # 3. Write to a secure temp file so Google's library reads it natively
+  # Convert literal \n text into actual Python newlines
+  raw_key = raw_key.replace("\\n", "\n").replace("\\r", "\r")
+
+  # Strip out headers, footers, and all whitespace to isolate the raw body
+  body_only = re.sub(r"-----(BEGIN|END) PRIVATE KEY-----", "", raw_key)
+  body_only = "".join(body_only.split())  # Removes all spaces and newlines
+
+  # Re-chunk the key cleanly into standard 64-character lines with real newlines
+  chunks = [body_only[i : i + 64] for i in range(0, len(body_only), 64)]
+  formatted_key = (
+      "-----BEGIN PRIVATE KEY-----\n"
+      + "\n".join(chunks)
+      + "\n-----END PRIVATE KEY-----\n"
+  )
+
+  creds_dict["private_key"] = formatted_key
+
+  # 3. Write to a secure temporary file
   with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp:
     json.dump(creds_dict, temp)
     temp_path = temp.name
 
-  # Add this right before service_account.Credentials.from_service_account_file:
-  st.write("KEY START:", repr(creds_dict["private_key"][:40]))
-
-  
-  # 4. Authenticate using the file method
+  # 4. Authenticate using the temporary file
   creds = service_account.Credentials.from_service_account_file(
       temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
   )
@@ -50,7 +53,7 @@ def load_excel_from_gdrive():
   # 5. Your Google Drive File ID
   file_id = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"  
 
-  # 6. Download and read into Pandas
+  # 6. Download and read the file into Pandas
   request = service.files().get_media(fileId=file_id)
   file_buffer = io.BytesIO()
   downloader = MediaIoBaseDownload(file_buffer, request)
@@ -64,9 +67,12 @@ def load_excel_from_gdrive():
   return df
 
 
-
 # Call it once to populate your dataframe variable
 picks_df = load_excel_from_gdrive()
+
+
+
+ 
 
 
 
