@@ -197,18 +197,34 @@ if picks_df is not None:
     active_proj_list = []
     max_pts_list = []
     root_for_list = []
+    ytd_total_list = []
+
+    # Column index 2 corresponds to Column C (0-indexed: A=0, B=1, C=2)
+    ytd_column_name = picks_df.columns[2] if len(picks_df.columns) > 2 else None
 
     pending_teams_in_slate = [
         t for t, p in LIVE_PROBABILITIES.items() if p not in (1.0, 0.0)
     ]
 
     for p in players:
+        player_row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
+        
+        base_ytd = 0
+        if not player_row.empty and ytd_column_name is not None:
+            try:
+                base_ytd = float(player_row.iloc[0][ytd_column_name])
+            except:
+                base_ytd = 0
+
         locked = sum(
             parsed_picks[p].get(t, 0)
             for t in COMPLETED_WINNERS
             if t in parsed_picks[p]
         )
         locked_pts_list.append(locked)
+
+        # Add Column C baseline YTD to the current week's Locked points for the YTD Total column
+        ytd_total_list.append(base_ytd + locked)
 
         # Active Projection: Locked + Live games where team is currently winning
         live_winning_points = sum(
@@ -245,14 +261,15 @@ if picks_df is not None:
         top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
         root_for_list.append(", ".join(top_roots) if top_roots else "-")
 
-    # Build DataFrame with Simulated Pts positioned after Max
+    # Build DataFrame
     sim_results = pd.DataFrame({
         'Player': players,
-        'Locked Pts': locked_pts_list,
-        'Active Proj': active_proj_list,
+        'Locked': locked_pts_list,
+        'w/Active': active_proj_list,
         'Max': max_pts_list,
-        'Simulated Pts': np.round(simulated_pts_list, 1),
+        'Simulated': np.round(simulated_pts_list, 1),
         'Root For': root_for_list,
+        'YTD Total': np.round(ytd_total_list, 1),
     })
 
     # =========================================================
@@ -303,9 +320,9 @@ if picks_df is not None:
     else:
         sim_results['Sim Win%'] = 0.0
 
-    # Sort results by Simulated Pts
+    # Sort results by Simulated points
     sorted_results = sim_results.sort_values(
-        by='Simulated Pts', ascending=False
+        by='Simulated', ascending=False
     ).reset_index(drop=True)
 
     # Insert Projected Rank Column at Position 0
@@ -320,12 +337,13 @@ if picks_df is not None:
         column_config={
             "Projected Rank": st.column_config.NumberColumn("Projected Rank", format="%d"),
             "Player": st.column_config.TextColumn("Player"),
-            "Locked Pts": st.column_config.NumberColumn("Locked Pts", format="%d"),
-            "Active Proj": st.column_config.NumberColumn("Active Proj", format="%d"),
+            "Locked": st.column_config.NumberColumn("Locked", format="%d"),
+            "w/Active": st.column_config.NumberColumn("w/Active", format="%d"),
             "Max": st.column_config.NumberColumn("Max", format="%d"),
-            "Simulated Pts": st.column_config.NumberColumn("Simulated Pts", format="%.1f"),
+            "Simulated": st.column_config.NumberColumn("Simulated", format="%.1f"),
             "Sim Win%": st.column_config.NumberColumn("Sim Win%", format="%.1f%%"),
             "Root For": st.column_config.TextColumn("Root For"),
+            "YTD Total": st.column_config.NumberColumn("YTD Total", format="%.1f"),
         },
     )
 
@@ -341,7 +359,7 @@ if picks_df is not None:
 
     plot_df = (
         sorted_results.head(15)
-        .melt(id_vars=['Player'], value_vars=['Locked Pts', 'Simulated Pts'])
+        .melt(id_vars=['Player'], value_vars=['Locked', 'Simulated'])
     )
 
     sns.barplot(
