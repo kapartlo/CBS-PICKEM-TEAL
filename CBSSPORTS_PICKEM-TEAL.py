@@ -19,11 +19,12 @@ st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simula
 st.markdown(
     """
     <style>
-        .block-container { padding-top: 1rem; padding-bottom: 1rem; }
-        h1 { font-size: 1.6rem !important; margin-bottom: 0.2rem !important; }
-        h3 { font-size: 1.2rem !important; margin-top: 0.8rem !important; margin-bottom: 0.4rem !important; }
-        p { margin-bottom: 0.4rem !important; }
-        th { text-align: center !important; }
+        .block-container { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+        h1 { font-size: 1.4rem !important; margin-bottom: 0.1rem !important; }
+        h3 { font-size: 1.1rem !important; margin-top: 0.5rem !important; margin-bottom: 0.3rem !important; }
+        p { margin-bottom: 0.3rem !important; }
+        th { text-align: center !important; font-size: 0.75rem !important; }
+        td { font-size: 0.75rem !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -70,6 +71,7 @@ def fetch_espn_nfl_data():
     completed_winners = []
     live_probabilities = {}
     pairing_map = []
+    active_games_count = 0
 
     try:
         response = requests.get(url, timeout=5)
@@ -85,6 +87,10 @@ def fetch_espn_nfl_data():
                     comp.get("status", {}).get("type", {}).get("name", "")
                 )
                 is_final = status_type == "STATUS_FINAL"
+                is_in_progress = status_type in ["STATUS_IN_PROGRESS", "STATUS_HALFTIME"]
+
+                if is_in_progress:
+                    active_games_count += 1
 
                 competitors = comp.get("competitors", [])
                 home_team, away_team = None, None
@@ -119,7 +125,7 @@ def fetch_espn_nfl_data():
     except Exception as e:
         st.warning(f"Could not connect to ESPN API: {e}")
 
-    return completed_winners, live_probabilities, pairing_map
+    return completed_winners, live_probabilities, pairing_map, active_games_count
 
 
 # Load Data
@@ -169,7 +175,7 @@ if picks_df is not None:
                     parsed_picks[player_name][team] = points
 
     # Automatically fetch winners and probabilities from ESPN API
-    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP = (
+    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT = (
         fetch_espn_nfl_data()
     )
 
@@ -178,9 +184,14 @@ if picks_df is not None:
     n_players = len(players)
     completed_games_count = len(COMPLETED_WINNERS)
 
+    # Display Top Summary Header Banner
+    st.info(
+        f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active."
+    )
+
     locked_pts_list = []
     projected_pts_list = []
-    cbs_score_pts_list = []
+    active_proj_list = []
     max_pts_list = []
     root_for_list = []
 
@@ -195,8 +206,15 @@ if picks_df is not None:
             if t in parsed_picks[p]
         )
         locked_pts_list.append(locked)
-        cbs_score = locked
-        cbs_score_pts_list.append(cbs_score)
+
+        # Active Projection: Locked + Live games where team is currently winning
+        live_winning_points = sum(
+            parsed_picks[p].get(t, 0)
+            for t, prob in LIVE_PROBABILITIES.items()
+            if prob == 1.0 and t in parsed_picks[p] and t not in COMPLETED_WINNERS
+        )
+        active_proj = locked + live_winning_points
+        active_proj_list.append(active_proj)
 
         active_expected = sum(
             parsed_picks[p].get(t, 0) * LIVE_PROBABILITIES.get(t, 0.5)
@@ -215,21 +233,20 @@ if picks_df is not None:
         max_pts_list.append(max_possible_points)
 
         # Calculate Root For Teams (Pending picks with highest confidence points)
+        all_player_picks = parsed_picks[p]
         pending_picks = [
-            (t, parsed_picks[p].get(t, 0))
-            for t in pending_teams_in_slate
-            if t in parsed_picks[p]
+            (t, pts) for t, pts in all_player_picks.items() 
+            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0.5) != 0.0
         ]
         pending_picks.sort(key=lambda x: x[1], reverse=True)
         top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
         root_for_list.append(", ".join(top_roots) if top_roots else "-")
 
-    # Build Condensed Dataframe with Locked Pts & Centered Layout
+    # Build DataFrame without the Games Completed Column
     sim_results = pd.DataFrame({
         'Player': players,
-        'Games': f"{completed_games_count}/{total_games}",
         'Locked Pts': locked_pts_list,
-        'CBS Proj': cbs_score_pts_list,
+        'Active Proj': active_proj_list,
         'Proj Pts': np.round(projected_pts_list, 1),
         'Max': max_pts_list,
         'Root For': root_for_list,
@@ -289,24 +306,28 @@ if picks_df is not None:
     else:
         sim_results['Sim Win%'] = 0.0
 
-    # Display Interactive DataFrame with Narrow, Centered Columns
-    st.subheader("📊 Live Standings & Win Projections")
+    # Sort results by Proj Pts
     sorted_results = sim_results.sort_values(
         by='Proj Pts', ascending=False
     ).reset_index(drop=True)
 
+    # Insert Rank (#) Column at Position 0
+    sorted_results.insert(0, '#', range(1, len(sorted_results) + 1))
+
+    # Display Interactive DataFrame with Ultra-Narrow Column Config
+    st.subheader("📊 Live Standings & Win Projections")
     st.dataframe(
         sorted_results,
         use_container_width=True,
         hide_index=True,
         column_config={
+            "#": st.column_config.NumberColumn("#", width="small", format="%d"),
             "Player": st.column_config.TextColumn("Player", width="small"),
-            "Games": st.column_config.TextColumn("Games", width="small"),
-            "Locked Pts": st.column_config.NumberColumn("Locked Pts", width="small", format="%d"),
-            "CBS Proj": st.column_config.NumberColumn("CBS Proj", width="small", format="%d"),
-            "Proj Pts": st.column_config.NumberColumn("Proj Pts", width="small", format="%.1f"),
+            "Locked Pts": st.column_config.NumberColumn("Locked", width="small", format="%d"),
+            "Active Proj": st.column_config.NumberColumn("Active Proj", width="small", format="%d"),
+            "Proj Pts": st.column_config.NumberColumn("Proj", width="small", format="%.1f"),
             "Max": st.column_config.NumberColumn("Max", width="small", format="%d"),
-            "Sim Win%": st.column_config.NumberColumn("Sim Win%", width="small", format="%.1f%%"),
+            "Sim Win%": st.column_config.NumberColumn("Win%", width="small", format="%.1f%%"),
             "Root For": st.column_config.TextColumn("Root For", width="medium"),
         },
     )
