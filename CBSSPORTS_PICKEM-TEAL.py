@@ -15,7 +15,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simulation")
 
-# Compact styling for mobile landscape view with centered headers & compact padding
+# Compact styling for mobile landscape view with centered headers & ultra-narrow columns
 st.markdown(
     """
     <style>
@@ -25,6 +25,8 @@ st.markdown(
         p { margin-bottom: 0.3rem !important; }
         th { text-align: center !important; font-size: 0.75rem !important; }
         td { font-size: 0.75rem !important; }
+        /* Force minimum possible column widths */
+        [data-testid="stDataFrame"] div[data-baseweb="flex-box"] { max-width: 100%; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -185,185 +187,3 @@ if picks_df is not None:
     completed_games_count = len(COMPLETED_WINNERS)
 
     # Display Top Summary Header Banner
-    st.info(
-        f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active."
-    )
-
-    locked_pts_list = []
-    projected_pts_list = []
-    active_proj_list = []
-    max_pts_list = []
-    root_for_list = []
-
-    pending_teams_in_slate = [
-        t for t, p in LIVE_PROBABILITIES.items() if p not in (1.0, 0.0)
-    ]
-
-    for p in players:
-        locked = sum(
-            parsed_picks[p].get(t, 0)
-            for t in COMPLETED_WINNERS
-            if t in parsed_picks[p]
-        )
-        locked_pts_list.append(locked)
-
-        # Active Projection: Locked + Live games where team is currently winning
-        live_winning_points = sum(
-            parsed_picks[p].get(t, 0)
-            for t, prob in LIVE_PROBABILITIES.items()
-            if prob == 1.0 and t in parsed_picks[p] and t not in COMPLETED_WINNERS
-        )
-        active_proj = locked + live_winning_points
-        active_proj_list.append(active_proj)
-
-        active_expected = sum(
-            parsed_picks[p].get(t, 0) * LIVE_PROBABILITIES.get(t, 0.5)
-            for t in LIVE_PROBABILITIES
-            if LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
-            and t in parsed_picks[p]
-        )
-        projected = locked + active_expected
-        projected_pts_list.append(projected)
-
-        max_possible_points = locked + sum(
-            parsed_picks[p].get(t, 0)
-            for t in pending_teams_in_slate
-            if t in parsed_picks[p]
-        )
-        max_pts_list.append(max_possible_points)
-
-        # Calculate Root For Teams (Pending picks with highest confidence points)
-        all_player_picks = parsed_picks[p]
-        pending_picks = [
-            (t, pts) for t, pts in all_player_picks.items() 
-            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0.5) != 0.0
-        ]
-        pending_picks.sort(key=lambda x: x[1], reverse=True)
-        top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
-        root_for_list.append(", ".join(top_roots) if top_roots else "-")
-
-    # Build DataFrame without the Games Completed Column
-    sim_results = pd.DataFrame({
-        'Player': players,
-        'Locked Pts': locked_pts_list,
-        'Active Proj': active_proj_list,
-        'Proj Pts': np.round(projected_pts_list, 1),
-        'Max': max_pts_list,
-        'Root For': root_for_list,
-    })
-
-    # =========================================================
-    # 4. RUN MONTE CARLO (10,000 SIMULATIONS)
-    # =========================================================
-    N_SIMS = 10000
-    pending_pairs = [
-        pair for pair in DEFAULT_PAIRING_MAP 
-        if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0)
-    ]
-    unresolved_teams = []
-    for t1, t2 in pending_pairs:
-        unresolved_teams.extend([t1, t2])
-
-    np.random.seed(42)
-    sim_wins_dict = {}
-    sim_wins = np.zeros((N_SIMS, len(unresolved_teams)), dtype=bool)
-
-    for pair_idx, (t1, t2) in enumerate(pending_pairs):
-        prob_t1 = LIVE_PROBABILITIES.get(t1, 0.5)
-        prob_t2 = LIVE_PROBABILITIES.get(t2, 0.5)
-        tot_p = prob_t1 + prob_t2
-        if tot_p > 0:
-            prob_t1 = prob_t1 / tot_p
-
-        wins_t1 = np.random.rand(N_SIMS) < prob_t1
-        wins_t2 = ~wins_t1
-
-        try:
-            t1_idx = unresolved_teams.index(t1)
-            t2_idx = unresolved_teams.index(t2)
-            sim_wins[:, t1_idx] = wins_t1
-            sim_wins[:, t2_idx] = wins_t2
-        except ValueError:
-            pass
-
-        sim_wins_dict[t1] = wins_t1
-        sim_wins_dict[t2] = wins_t2
-
-    weekly_points = np.zeros((n_players, N_SIMS))
-    for p_idx, player in enumerate(players):
-        locked_part = locked_pts_list[p_idx]
-        weekly_points[p_idx, :] = locked_part
-        for t_idx, team in enumerate(unresolved_teams):
-            picks_val = parsed_picks[player].get(team, 0)
-            weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
-
-    if N_SIMS > 0 and weekly_points.shape[1] > 0:
-        max_weekly_scores = np.max(weekly_points, axis=0)
-        weekly_winners = weekly_points == max_weekly_scores
-        weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
-        total_weekly_wins = np.sum(weekly_win_shares, axis=1)
-        sim_results['Sim Win%'] = np.round((total_weekly_wins / N_SIMS) * 100, 1)
-    else:
-        sim_results['Sim Win%'] = 0.0
-
-    # Sort results by Proj Pts
-    sorted_results = sim_results.sort_values(
-        by='Proj Pts', ascending=False
-    ).reset_index(drop=True)
-
-    # Insert Rank (#) Column at Position 0
-    sorted_results.insert(0, '#', range(1, len(sorted_results) + 1))
-
-    # Display Interactive DataFrame with Ultra-Narrow Column Config
-    st.subheader("📊 Live Standings & Win Projections")
-    st.dataframe(
-        sorted_results,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "#": st.column_config.NumberColumn("#", width="small", format="%d"),
-            "Player": st.column_config.TextColumn("Player", width="small"),
-            "Locked Pts": st.column_config.NumberColumn("Locked", width="small", format="%d"),
-            "Active Proj": st.column_config.NumberColumn("Active Proj", width="small", format="%d"),
-            "Proj Pts": st.column_config.NumberColumn("Proj", width="small", format="%.1f"),
-            "Max": st.column_config.NumberColumn("Max", width="small", format="%d"),
-            "Sim Win%": st.column_config.NumberColumn("Win%", width="small", format="%.1f%%"),
-            "Root For": st.column_config.TextColumn("Root For", width="medium"),
-        },
-    )
-
-    st.markdown(
-        "[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)"
-    )
-
-    # =========================================================
-    # 5. CHART PLOTTING (Compact Horizontal & Highlighted Projections)
-    # =========================================================
-    st.subheader("📈 Projected vs Current Performance")
-    fig, ax = plt.subplots(figsize=(6, 4))
-
-    plot_df = (
-        sorted_results.head(15)
-        .melt(id_vars=['Player'], value_vars=['Locked Pts', 'Proj Pts'])
-    )
-
-    sns.barplot(
-        data=plot_df,
-        x='value',
-        y='Player',
-        hue='variable',
-        ax=ax,
-        palette=['#95a5a6', '#00cec9'],
-    )
-
-    ax.tick_params(axis='y', labelsize=8)
-    ax.tick_params(axis='x', labelsize=8)
-    ax.set_ylabel('Player', fontsize=9)
-    ax.set_xlabel('Points', fontsize=9)
-    ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
-
-    for container in ax.containers:
-        ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
-
-    plt.tight_layout()
-    st.pyplot(fig)
