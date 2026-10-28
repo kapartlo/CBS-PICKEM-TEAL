@@ -15,18 +15,15 @@ from googleapiclient.http import MediaIoBaseDownload
 
 st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simulation")
 
-# Compact styling for mobile landscape view with centered headers & ultra-narrow columns
+# Compact CSS styling for mobile landscape view
 st.markdown(
     """
     <style>
-        .block-container { padding-top: 0.5rem; padding-bottom: 0.5rem; }
-        h1 { font-size: 1.4rem !important; margin-bottom: 0.1rem !important; }
+        .block-container { padding-top: 1rem; padding-bottom: 1rem; }
+        h1 { font-size: 1.5rem !important; margin-bottom: 0.2rem !important; }
         h3 { font-size: 1.1rem !important; margin-top: 0.5rem !important; margin-bottom: 0.3rem !important; }
         p { margin-bottom: 0.3rem !important; }
-        th { text-align: center !important; font-size: 0.75rem !important; }
-        td { font-size: 0.75rem !important; }
-        /* Force minimum possible column widths */
-        [data-testid="stDataFrame"] div[data-baseweb="flex-box"] { max-width: 100%; }
+        th { text-align: center !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -38,30 +35,34 @@ st.markdown(
 # =========================================================
 @st.cache_data(ttl=600)
 def load_excel_from_gdrive():
-    creds_json = base64.b64decode(st.secrets["gdrive_b64"]).decode("utf-8")
-    creds_dict = json.loads(creds_json)
+    try:
+        creds_json = base64.b64decode(st.secrets["gdrive_b64"]).decode("utf-8")
+        creds_dict = json.loads(creds_json)
 
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp:
-        json.dump(creds_dict, temp)
-        temp_path = temp.name
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp:
+            json.dump(creds_dict, temp)
+            temp_path = temp.name
 
-    creds = service_account.Credentials.from_service_account_file(
-        temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-    )
-    service = build("drive", "v3", credentials=creds)
-    file_id = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"
+        creds = service_account.Credentials.from_service_account_file(
+            temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        )
+        service = build("drive", "v3", credentials=creds)
+        file_id = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"
 
-    request = service.files().get_media(fileId=file_id)
-    file_buffer = io.BytesIO()
-    downloader = MediaIoBaseDownload(file_buffer, request)
+        request = service.files().get_media(fileId=file_id)
+        file_buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_buffer, request)
 
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
 
-    file_buffer.seek(0)
-    df = pd.read_excel(file_buffer, sheet_name=0)
-    return df
+        file_buffer.seek(0)
+        df = pd.read_excel(file_buffer, sheet_name=0)
+        return df
+    except Exception as e:
+        st.error(f"Error loading Excel from Google Drive: {e}")
+        return None
 
 
 # =========================================================
@@ -108,82 +109,4 @@ def fetch_espn_nfl_data():
                         home_winner = winner
                     else:
                         away_team = team_abbr
-                        away_winner = winner
-
-                if home_team and away_team:
-                    pairing_map.append((home_team, away_team))
-                    if is_final:
-                        if home_winner:
-                            completed_winners.append(home_team)
-                            live_probabilities[home_team] = 1.0
-                            live_probabilities[away_team] = 0.0
-                        elif away_winner:
-                            completed_winners.append(away_team)
-                            live_probabilities[away_team] = 1.0
-                            live_probabilities[home_team] = 0.0
-                    else:
-                        live_probabilities[home_team] = 0.5
-                        live_probabilities[away_team] = 0.5
-    except Exception as e:
-        st.warning(f"Could not connect to ESPN API: {e}")
-
-    return completed_winners, live_probabilities, pairing_map, active_games_count
-
-
-# Load Data
-picks_df = load_excel_from_gdrive()
-
-# =========================================================
-# 3. RUN SIMULATION & RENDER DASHBOARD
-# =========================================================
-st.title("🏈 CBS Sports Pick'em Pool Monte Carlo Dashboard")
-
-if picks_df is not None:
-    # Parse Picks dictionary mapping
-    parsed_picks = {}
-    game_cols = [
-        col
-        for col in picks_df.columns
-        if any(
-            day in str(col)
-            for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat']
-        )
-    ]
-
-    col_to_teams = {}
-    for col in game_cols:
-        match_val = str(picks_df.loc[0, col]).strip()
-        if pd.notna(match_val) and match_val != 'nan':
-            col_to_teams[col] = match_val
-
-    total_games = len(col_to_teams)
-
-    for index in range(1, len(picks_df)):
-        player_name = picks_df.loc[index, 'Players']
-        if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
-            continue
-        player_name = str(player_name).strip()
-        player_name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
-        player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
-
-        parsed_picks[player_name] = {}
-        for col, match_str in col_to_teams.items():
-            pick_val = str(picks_df.loc[index, col]).strip()
-            if pd.notna(pick_val) and '(' in pick_val and ')' in pick_val:
-                match = re.match(r'([A-Za-z]+)\((\d+)\)', pick_val)
-                if match:
-                    team = match.group(1).upper()
-                    points = int(match.group(2))
-                    parsed_picks[player_name][team] = points
-
-    # Automatically fetch winners and probabilities from ESPN API
-    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT = (
-        fetch_espn_nfl_data()
-    )
-
-    # Math Setup
-    players = list(parsed_picks.keys())
-    n_players = len(players)
-    completed_games_count = len(COMPLETED_WINNERS)
-
-    # Display Top Summary Header Banner
+                        away_
