@@ -109,4 +109,205 @@ def fetch_espn_nfl_data():
                         home_winner = winner
                     else:
                         away_team = team_abbr
-                        away_
+                        away_winner = winner
+
+                if home_team and away_team:
+                    pairing_map.append((home_team, away_team))
+                    if is_final:
+                        if home_winner:
+                            completed_winners.append(home_team)
+                            live_probabilities[home_team] = 1.0
+                            live_probabilities[away_team] = 0.0
+                        elif away_winner:
+                            completed_winners.append(away_team)
+                            live_probabilities[away_team] = 1.0
+                            live_probabilities[home_team] = 0.0
+                    else:
+                        live_probabilities[home_team] = 0.5
+                        live_probabilities[away_team] = 0.5
+    except Exception as e:
+        st.warning(f"Could not connect to ESPN API: {e}")
+
+    return completed_winners, live_probabilities, pairing_map, active_games_count
+
+
+# Load Data
+picks_df = load_excel_from_gdrive()
+
+# =========================================================
+# 3. RUN SIMULATION & RENDER DASHBOARD
+# =========================================================
+st.title("🏈 CBS Sports Pick'em Pool Monte Carlo Dashboard")
+
+if picks_df is not None:
+    # Parse Picks dictionary mapping
+    parsed_picks = {}
+    game_cols = [
+        col
+        for col in picks_df.columns
+        if any(
+            day in str(col)
+            for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat']
+        )
+    ]
+
+    col_to_teams = {}
+    for col in game_cols:
+        match_val = str(picks_df.loc[0, col]).strip()
+        if pd.notna(match_val) and match_val != 'nan':
+            col_to_teams[col] = match_val
+
+    total_games = len(col_to_teams)
+
+    for index in range(1, len(picks_df)):
+        player_name = picks_df.loc[index, 'Players']
+        if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
+            continue
+        player_name = str(player_name).strip()
+        player_name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
+        player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
+
+        parsed_picks[player_name] = {}
+        for col, match_str in col_to_teams.items():
+            pick_val = str(picks_df.loc[index, col]).strip()
+            if pd.notna(pick_val) and '(' in pick_val and ')' in pick_val:
+                match = re.match(r'([A-Za-z]+)\((\d+)\)', pick_val)
+                if match:
+                    team = match.group(1).upper()
+                    points = int(match.group(2))
+                    parsed_picks[player_name][team] = points
+
+    # Automatically fetch winners and probabilities from ESPN API
+    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT = (
+        fetch_espn_nfl_data()
+    )
+
+    # Math Setup
+    players = list(parsed_picks.keys())
+    n_players = len(players)
+    completed_games_count = len(COMPLETED_WINNERS)
+
+    # Display Top Summary Header Banner
+    st.info(
+        f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active."
+    )
+
+    locked_pts_list = []
+    simulated_pts_list = []
+    active_proj_list = []
+    max_pts_list = []
+    root_for_list = []
+
+    pending_teams_in_slate = [
+        t for t, p in LIVE_PROBABILITIES.items() if p not in (1.0, 0.0)
+    ]
+
+    for p in players:
+        locked = sum(
+            parsed_picks[p].get(t, 0)
+            for t in COMPLETED_WINNERS
+            if t in parsed_picks[p]
+        )
+        locked_pts_list.append(locked)
+
+        # Active Projection: Locked + Live games where team is currently winning
+        live_winning_points = sum(
+            parsed_picks[p].get(t, 0)
+            for t, prob in LIVE_PROBABILITIES.items()
+            if prob == 1.0 and t in parsed_picks[p] and t not in COMPLETED_WINNERS
+        )
+        active_proj = locked + live_winning_points
+        active_proj_list.append(active_proj)
+
+        active_expected = sum(
+            parsed_picks[p].get(t, 0) * LIVE_PROBABILITIES.get(t, 0.5)
+            for t in LIVE_PROBABILITIES
+            if LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
+            and t in parsed_picks[p]
+        )
+        simulated_pts = locked + active_expected
+        simulated_pts_list.append(simulated_pts)
+
+        max_possible_points = locked + sum(
+            parsed_picks[p].get(t, 0)
+            for t in pending_teams_in_slate
+            if t in parsed_picks[p]
+        )
+        max_pts_list.append(max_possible_points)
+
+        # Calculate Root For Teams (Pending picks with highest confidence points)
+        all_player_picks = parsed_picks[p]
+        pending_picks = [
+            (t, pts) for t, pts in all_player_picks.items() 
+            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
+        ]
+        pending_picks.sort(key=lambda x: x[1], reverse=True)
+        top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
+        root_for_list.append(", ".join(top_roots) if top_roots else "-")
+
+    # Build DataFrame with Simulated Pts positioned after Max
+    sim_results = pd.DataFrame({
+        'Player': players,
+        'Locked Pts': locked_pts_list,
+        'Active Proj': active_proj_list,
+        'Max': max_pts_list,
+        'Simulated Pts': np.round(simulated_pts_list, 1),
+        'Root For': root_for_list,
+    })
+
+    # =========================================================
+    # 4. RUN MONTE CARLO (10,000 SIMULATIONS)
+    # =========================================================
+    N_SIMS = 10000
+    pending_pairs = [
+        pair for pair in DEFAULT_PAIRING_MAP 
+        if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0)
+    ]
+    unresolved_teams = []
+    for t1, t2 in pending_pairs:
+        unresolved_teams.extend([t1, t2])
+
+    np.random.seed(42)
+    sim_wins_dict = {}
+    sim_wins = np.zeros((N_SIMS, len(unresolved_teams)), dtype=bool)
+
+    for pair_idx, (t1, t2) in enumerate(pending_pairs):
+        prob_t1 = LIVE_PROBABILITIES.get(t1, 0.5)
+        prob_t2 = LIVE_PROBABILITIES.get(t2, 0.5)
+        tot_p = prob_t1 + prob_t2
+        if tot_p > 0:
+            prob_t1 = prob_t1 / tot_p
+
+        wins_t1 = np.random.rand(N_SIMS) < prob_t1
+        wins_t2 = ~wins_t1
+
+        try:
+            t1_idx = unresolved_teams.index(t1)
+            t2_idx = unresolved_teams.index(t2)
+            sim_wins[:, t1_idx] = wins_t1
+            sim_wins[:, t2_idx] = wins_t2
+        except ValueError:
+            pass
+
+        sim_wins_dict[t1] = wins_t1
+        sim_wins_dict[t2] = wins_t2
+
+    weekly_points = np.zeros((n_players, N_SIMS))
+    for p_idx, player in enumerate(players):
+        locked_part = locked_pts_list[p_idx]
+        weekly_points[p_idx, :] = locked_part
+        for t_idx, team in enumerate(unresolved_teams):
+            picks_val = parsed_picks[player].get(team, 0)
+            weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
+
+    if N_SIMS > 0 and weekly_points.shape[1] > 0:
+        max_weekly_scores = np.max(weekly_points, axis=0)
+        weekly_winners = weekly_points == max_weekly_scores
+        weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
+        total_weekly_wins = np.sum(weekly_win_shares, axis=1)
+        sim_results['Sim Win%'] = np.round((total_weekly_wins / N_SIMS) * 100, 1)
+    else:
+        sim_results['Sim Win%'] = 0.0
+
+    # Sort results by Simulated Pts
+    sorted_results
