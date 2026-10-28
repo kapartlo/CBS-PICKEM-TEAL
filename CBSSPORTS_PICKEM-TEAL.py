@@ -140,16 +140,20 @@ picks_df = load_excel_from_gdrive()
 st.title("🏈 CBS Sports Pick'em Pool Monte Carlo Dashboard")
 
 if picks_df is not None:
-    # Parse Picks dictionary mapping
+    # Parse Picks dictionary mapping with flexible game column matching
     parsed_picks = {}
     game_cols = [
         col
         for col in picks_df.columns
         if any(
             day in str(col)
-            for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat']
-        )
+            for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat', '(']
+        ) and str(col).lower() not in ['players', 'total', 'ytd', 'season', 'overall']
     ]
+
+    # Fallback if specific day naming convention isn't matched perfectly
+    if not game_cols:
+        game_cols = [c for c in picks_df.columns[3:]] # Fallback to standard offset columns
 
     col_to_teams = {}
     for col in game_cols:
@@ -157,7 +161,7 @@ if picks_df is not None:
         if pd.notna(match_val) and match_val != 'nan':
             col_to_teams[col] = match_val
 
-    total_games = len(col_to_teams)
+    total_games = len(col_to_teams) if len(col_to_teams) > 0 else 16
 
     for index in range(1, len(picks_df)):
         player_name = picks_df.loc[index, 'Players']
@@ -187,7 +191,7 @@ if picks_df is not None:
     n_players = len(players)
     completed_games_count = len(COMPLETED_WINNERS)
 
-    # Display Top Summary Header Banner
+    # Display Top Summary Header Banner Safely
     st.info(
         f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active."
     )
@@ -261,7 +265,7 @@ if picks_df is not None:
         top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
         root_for_list.append(", ".join(top_roots) if top_roots else "-")
 
-    # Build DataFrame with Locked YTD Total positioned right after Locked
+    # Build DataFrame
     sim_results = pd.DataFrame({
         'Player': players,
         'Locked': locked_pts_list,
@@ -275,4 +279,110 @@ if picks_df is not None:
     # =========================================================
     # 4. RUN MONTE CARLO (10,000 SIMULATIONS)
     # =========================================================
-    N_SIMS = 1000
+    N_SIMS = 10000
+    pending_pairs = [
+        pair for pair in DEFAULT_PAIRING_MAP 
+        if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0)
+    ]
+    unresolved_teams = []
+    for t1, t2 in pending_pairs:
+        unresolved_teams.extend([t1, t2])
+
+    np.random.seed(42)
+
+    if len(pending_pairs) > 0:
+        sim_wins = np.zeros((N_SIMS, len(unresolved_teams)), dtype=bool)
+        for pair_idx, (t1, t2) in enumerate(pending_pairs):
+            prob_t1 = LIVE_PROBABILITIES.get(t1, 0.5)
+            prob_t2 = LIVE_PROBABILITIES.get(t2, 0.5)
+            tot_p = prob_t1 + prob_t2
+            if tot_p > 0:
+                prob_t1 = prob_t1 / tot_p
+
+            wins_t1 = np.random.rand(N_SIMS) < prob_t1
+            try:
+                t1_idx = unresolved_teams.index(t1)
+                t2_idx = unresolved_teams.index(t2)
+                sim_wins[:, t1_idx] = wins_t1
+                sim_wins[:, t2_idx] = ~wins_t1
+            except ValueError:
+                pass
+
+        weekly_points = np.zeros((n_players, N_SIMS))
+        for p_idx, player in enumerate(players):
+            locked_part = locked_pts_list[p_idx]
+            weekly_points[p_idx, :] = locked_part
+            for t_idx, team in enumerate(unresolved_teams):
+                picks_val = parsed_picks[player].get(team, 0)
+                weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
+
+        max_weekly_scores = np.max(weekly_points, axis=0)
+        weekly_winners = weekly_points == max_weekly_scores
+        weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
+        total_weekly_wins = np.sum(weekly_win_shares, axis=1)
+        sim_results['Sim Win%'] = np.round((total_weekly_wins / N_SIMS) * 100, 1)
+    else:
+        sim_results['Sim Win%'] = 0.0
+
+    # Sort results by Simulated points
+    sorted_results = sim_results.sort_values(
+        by='Simulated', ascending=False
+    ).reset_index(drop=True)
+
+    # Insert Projected Rank Column at Position 0
+    sorted_results.insert(0, 'Projected Rank', range(1, len(sorted_results) + 1))
+
+    # Display Interactive DataFrame
+    st.subheader("📊 Live Standings & Win Projections")
+    st.dataframe(
+        sorted_results,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Projected Rank": st.column_config.NumberColumn("Projected Rank", format="%d"),
+            "Player": st.column_config.TextColumn("Player"),
+            "Locked": st.column_config.NumberColumn("Locked", format="%d"),
+            "Locked YTD Total": st.column_config.NumberColumn("Locked YTD Total", format="%d"),
+            "w/Active": st.column_config.NumberColumn("w/Active", format="%d"),
+            "Max": st.column_config.NumberColumn("Max", format="%d"),
+            "Simulated": st.column_config.NumberColumn("Simulated", format="%.1f"),
+            "Sim Win%": st.column_config.NumberColumn("Sim Win%", format="%.1f%%"),
+            "Root For": st.column_config.TextColumn("Root For"),
+        },
+    )
+
+    st.markdown(
+        "[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)"
+    )
+
+    # =========================================================
+    # 5. CHART PLOTTING
+    # =========================================================
+    st.subheader("📈 Projected vs Current Performance")
+    fig, ax = plt.subplots(figsize=(6, 4))
+
+    plot_df = (
+        sorted_results.head(15)
+        .melt(id_vars=['Player'], value_vars=['Locked', 'Simulated'])
+    )
+
+    sns.barplot(
+        data=plot_df,
+        x='value',
+        y='Player',
+        hue='variable',
+        ax=ax,
+        palette=['#95a5a6', '#00cec9'],
+    )
+
+    ax.tick_params(axis='y', labelsize=8)
+    ax.tick_params(axis='x', labelsize=8)
+    ax.set_ylabel('Player', fontsize=9)
+    ax.set_xlabel('Points', fontsize=9)
+    ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
+
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
+
+    plt.tight_layout()
+    st.pyplot(fig)
