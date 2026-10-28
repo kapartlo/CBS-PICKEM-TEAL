@@ -255,4 +255,24 @@ if picks_df is not None:
         all_player_picks = parsed_picks[p]
         pending_picks = [
             (t, pts) for t, pts in all_player_picks.items() 
-            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0
+            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
+        ]
+        pending_picks.sort(key=lambda x: x[1], reverse=True)
+        top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
+        root_for_list.append(", ".join(top_roots) if top_roots else "-")
+
+    # Build DataFrame with Locked YTD Total positioned right after Locked
+    sim_results = pd.DataFrame({
+        'Player': players,
+        'Locked': locked_pts_list,
+        'Locked YTD Total': ytd_total_list,
+        'w/Active': active_proj_list,
+        'Max': max_pts_list,
+        'Simulated': np.round(simulated_pts_list, 1),
+        'Root For': root_for_list,
+    })
+
+    # =========================================================
+    # 4. RUN MONTE CARLO (10,000 SIMULATIONS)
+    # =========================================================
+    N_SIMS = 1000
