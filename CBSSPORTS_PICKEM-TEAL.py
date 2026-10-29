@@ -2,10 +2,30 @@
 import numpy as np
 import pandas as pd
 import requests
+import streamlit as st
 import itertools
 import scipy.stats as stats
 import re
+from io import BytesIO
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+st.set_page_config(page_title="CBS Sports Pick'em Simulation", layout="wide")
+st.title("CBS Sports Pick'em Simulation")
+st.caption("Load your weekly pool picks to see current standings and projections.")
+
+with st.sidebar:
+    st.header("Picks source")
+    uploaded_file = st.file_uploader(
+        "Upload a picks file",
+        type=["csv", "xlsx", "xls"],
+        help="Upload a CSV or Excel workbook with a Players column and weekly game columns.",
+    )
+    sheet_csv_url = st.text_input(
+        "Google Sheets CSV URL",
+        help="Use a published/exported CSV link. An uploaded file takes priority.",
+    )
 
 # =========================================================
 # 1. DYNAMICALLY LOAD ALL_POOL_PICKS (WEB-FIRST / EXCEL FALLBACK)
@@ -52,30 +72,47 @@ def parse_pool_picks(picks_df):
 
     return parsed_picks, col_to_teams
 
-if 'ALL_POOL_PICKS' not in globals() or not ALL_POOL_PICKS:
-    ALL_POOL_PICKS = {}
-
-    if 'SHEET_CSV_URL' in globals() and SHEET_CSV_URL:
-        print("⏳ Attempting to load picks from your Google Sheets Web Link...")
-        try:
-            picks_df = pd.read_csv(SHEET_CSV_URL)
-            parsed_picks, col_to_teams = parse_pool_picks(picks_df)
-            ALL_POOL_PICKS = parsed_picks
-            print(f"SUCCESS: Loaded {len(ALL_POOL_PICKS)} players from Google Sheet Web Link!")
-        except Exception as e:
-            print(f"★ Google Sheets Web Link loading failed: {e}. Falling back to local Drive...")
-
-    if not ALL_POOL_PICKS:
-        try:
-            picks_df = pd.read_excel(EXCEL_FILE_PATH)
-            parsed_picks, col_to_teams = parse_pool_picks(picks_df)
-            ALL_POOL_PICKS = parsed_picks
-            print(f"Successfully parsed picks for {len(ALL_POOL_PICKS)} players from Excel!")
-        except Exception as e:
-            print(f"Error loading/parsing Excel file: {e}. Falling back to default empty state.")
-            ALL_POOL_PICKS = {}
+col_to_teams = {}
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.lower().endswith(".csv"):
+            picks_df = pd.read_csv(uploaded_file)
+        else:
+            picks_df = pd.read_excel(uploaded_file)
+    except Exception as exc:
+        st.error(f"Could not read the uploaded picks file: {exc}")
+        st.stop()
+elif sheet_csv_url.strip():
+    try:
+        parsed_url = urlparse(sheet_csv_url.strip())
+        if parsed_url.scheme != "https" or parsed_url.hostname not in {"docs.google.com", "drive.google.com"}:
+            st.error("Use an HTTPS Google Sheets or Google Drive CSV URL.")
+            st.stop()
+        with st.spinner("Loading picks from Google Sheets..."):
+            response = requests.get(sheet_csv_url.strip(), timeout=15, allow_redirects=False)
+            response.raise_for_status()
+            if 300 <= response.status_code < 400:
+                st.error("The sheet URL redirected. Enter a direct, publicly accessible CSV export URL instead.")
+                st.stop()
+            picks_df = pd.read_csv(BytesIO(response.content))
+    except Exception as exc:
+        st.error(f"Could not load the Google Sheets CSV URL: {exc}")
+        st.stop()
+elif Path(EXCEL_FILE_PATH).is_file():
+    try:
+        picks_df = pd.read_excel(EXCEL_FILE_PATH)
+    except Exception as exc:
+        st.error(f"Could not read the default picks workbook: {exc}")
+        st.stop()
 else:
-    print(f"Using {len(ALL_POOL_PICKS)} players currently loaded in memory.")
+    st.info("Upload your picks file or enter a Google Sheets CSV URL in the sidebar to get started.")
+    st.stop()
+
+ALL_POOL_PICKS, col_to_teams = parse_pool_picks(picks_df)
+if not ALL_POOL_PICKS:
+    st.error("No player picks were found. Check that the file has a 'Players' column and game-pick columns.")
+    st.stop()
+st.success(f"Loaded picks for {len(ALL_POOL_PICKS)} players.")
 
 # =========================================================
 # 2. FREE ESPN API MULTI-WEEK SEARCH FOR ALIGNMENT
@@ -94,7 +131,7 @@ def spread_to_prob(spread):
 
 # Populate matchups from Excel headers
 active_match_headers = list(col_to_teams.values()) if 'col_to_teams' in globals() else []
-print(f"ፔ Active Weekly Slate Matchups (Excel): {active_match_headers}")
+st.caption(f"Weekly slate matchups found: {len(active_match_headers)}")
 
 LIVE_PROBABILITIES = {}
 LIVE_WINNING_TEAMS = []
@@ -102,12 +139,15 @@ LIVE_CURRENT_LEADERS = []
 completed_games_count = 0
 
 # Multi-week historical search to locate these exact matchups
-print("🔍 Searching through NFL schedule weeks to match Excel slate...")
+st.info("Checking ESPN schedules for completed games. This may take a few seconds.")
 matched_games = {}
+schedule_lookup_failures = 0
 for week in range(1, 19):
     url = f"https://site.api.espn.com/apis/site/v2/sports/american-football/nfl/scoreboard?week={week}"
     try:
-        res = requests.get(url).json()
+        response = requests.get(url, timeout=8)
+        response.raise_for_status()
+        res = response.json()
         for event in res.get('events', []):
             competition = event.get('competitions', [{}])[0]
             competitors = competition.get('competitors', [])
@@ -131,6 +171,7 @@ for week in range(1, 19):
                         'away_score': a_score
                     }
     except Exception as e:
+        schedule_lookup_failures += 1
         continue
 
 # Reconstruct live tracking based on correct historical/live matchups matched
@@ -155,9 +196,12 @@ for m, g in matched_games.items():
 
 # Do not invent completed results when ESPN has no completed matchup data.
 if completed_games_count == 0:
-    print("★ No completed games matched your slate; treating all games as unresolved.")
+    st.warning("No completed games matched this slate; all unmatched games are treated as unresolved.")
 
-print(f"🎯 Dynamic alignment found {completed_games_count} completed games matching your Excel sheet matchups!")
+if schedule_lookup_failures == 18:
+    st.warning("ESPN schedule data could not be reached. Projections use fallback probabilities.")
+else:
+    st.caption(f"ESPN matched {completed_games_count} completed game(s) to this slate.")
 
 # Fallback probability mapping for remaining unresolved teams
 DEFAULT_SLATE = {
@@ -179,7 +223,7 @@ for team in LIVE_WINNING_TEAMS:
 # 4. CALCULATE STANDINGS & RUN MONTE CARLO (IF DATA EXISTS)
 # =========================================================
 if not ALL_POOL_PICKS:
-  print("\n★ Cannot run simulation: No player picks are currently loaded.")
+  st.warning("Cannot run the simulation because no player picks are loaded.")
 else:
   sim_results = pd.DataFrame({'Player': list(ALL_POOL_PICKS.keys())})
 
@@ -374,32 +418,8 @@ else:
   sim_results['Best Rooting Interests'] = leverage_swings_list
   sim_results['Proj 1st Place %'] = sim_results['Simulated Weekly 1st Place %']
 
-  # Updated visual headers: placed "Max Pts" right after "Current Pts" and before "Proj CBS", with decreased width (from 25 to 18)
-  header_line1 = f"{'Proj':<6} {'Player':<18} {'Games':>10} {'Locked':>8} {'Current':>8} {'Max Pts':>18} {'Proj CBS':>14} {'Proj':>8}  {'Simulated Weekly':<12}    {'Best Rooting Interests'}"
-  header_line2 = f"{'Rank':<6} {'':<18} {'Completed':>10} {'Pts':>8} {'Pts':>8} {'(All Picks Win)':>18} {'Sports Pts':>14} {'Pts':>8}  {'1st Place %':<12}"
-  title_header = f"ጁ ESPN Powered Pick'em Projections (10,000 Monte Carlo Simulations via Spreads)"
-
-  print('\n' + '=' * 170)
-  print(title_header)
-  print('=' * 170)
-  print(header_line1)
-  print(header_line2)
-  print('-' * 170)
-
-  for rank, (idx, row) in enumerate(sim_results.sort_values(by='Proj Pts', ascending=False).iterrows(), start=1):
-    win_pct = row['Proj 1st Place %']
-    math_surv = row['Math Survival Count']
-
-    if math_surv == 0:
-      win_pct_str = f"{' -':>12}"
-    elif win_pct < 0.5:
-      win_pct_str = f"{'Under 0.5%':>12}"
-    else:
-      win_pct_str = f"{win_pct:>11.1f}%"
-
-    print(
-        f"{rank:<6} {row['Player']:<18} {row['Games Completed']:>10}"
-        f" {row['Locked Pts']:>8d} {row['Current Pts']:>8d} {row['Max Pts (All Picks Win)']:>18d} {row['Proj CBS Sports Pts']:>14d} {row['Proj Pts']:>8.1f}"
-        f"  {win_pct_str:<12}    {row['Best Rooting Interests']}"
-    )
-  print('=' * 170 + '\n')
+  st.subheader("ESPN-powered pick'em projections")
+  st.caption("10,000 Monte Carlo simulations")
+  ranked_results = sim_results.sort_values(by='Proj Pts', ascending=False).reset_index(drop=True)
+  ranked_results.insert(0, "Rank", np.arange(1, len(ranked_results) + 1))
+  st.dataframe(ranked_results, use_container_width=True, hide_index=True)
