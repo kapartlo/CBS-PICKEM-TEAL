@@ -200,10 +200,6 @@ if picks_df is not None:
 
     ytd_column_name = picks_df.columns[2] if len(picks_df.columns) > 2 else None
 
-    pending_teams_in_slate = [
-        t for t, p in LIVE_PROBABILITIES.items() if p not in (1.0, 0.0)
-    ]
-
     for p in players:
         player_row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
         
@@ -240,10 +236,10 @@ if picks_df is not None:
         simulated_pts = locked + active_expected
         simulated_pts_list.append(simulated_pts)
 
+        # Fixed Max calculation: includes all picks that haven't explicitly lost in COMPLETED_WINNERS
         max_possible_points = locked + sum(
-            parsed_picks[p].get(t, 0)
-            for t in pending_teams_in_slate
-            if t in parsed_picks[p]
+            pts for team, pts in parsed_picks[p].items()
+            if team not in COMPLETED_WINNERS
         )
         max_pts_list.append(max_possible_points)
 
