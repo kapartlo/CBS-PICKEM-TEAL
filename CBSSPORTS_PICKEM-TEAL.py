@@ -176,12 +176,11 @@ if picks_df is not None:
     completed_games_count = len(COMPLETED_WINNERS)
 
     st.info(
-        f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players Parsed:** {n_players}"
+        f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Player: {n_players}**"
     )
 
-    # Raw Excel Data Debug Viewer
+    # Raw Excel Data Debug Viewer (cleaned of text list)
     with st.expander("📊 View Raw Excel Data"):
-        st.write("Columns found:", picks_df.columns.tolist())
         st.dataframe(picks_df, use_container_width=True, hide_index=True)
 
     locked_pts_list = []
@@ -333,45 +332,4 @@ if picks_df is not None:
                 "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
                 "Max": st.column_config.NumberColumn("Max", format="%d"),
                 "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%.1f"),
-                "Sim Win%": st.column_config.NumberColumn("Sim Win%", format="%.1f%%"),
-                "Root For": st.column_config.TextColumn("Root For"),
-            },
-        )
-
-        st.markdown(
-            "[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)"
-        )
-
-        # =========================================================
-        # 5. CHART PLOTTING
-        # =========================================================
-        st.subheader("📈 Projected vs Current Performance")
-        fig, ax = plt.subplots(figsize=(6, 4))
-
-        plot_df = (
-            sorted_results.head(15)
-            .melt(id_vars=['Player'], value_vars=['Locked', 'Sim Median Pts'])
-        )
-
-        sns.barplot(
-            data=plot_df,
-            x='value',
-            y='Player',
-            hue='variable',
-            ax=ax,
-            palette=['#95a5a6', '#00cec9'],
-        )
-
-        ax.tick_params(axis='y', labelsize=8)
-        ax.tick_params(axis='x', labelsize=8)
-        ax.set_ylabel('Player', fontsize=9)
-        ax.set_xlabel('Points', fontsize=9)
-        ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
-
-        for container in ax.containers:
-            ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
-
-        plt.tight_layout()
-        st.pyplot(fig)
-    else:
-        st.warning("No player picks could be parsed.")
+                "Sim Win%": st.column_config.NumberColumn("Sim Win%", format="%.1f
