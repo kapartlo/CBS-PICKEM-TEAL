@@ -1,398 +1,405 @@
-import base64
-import io
-import json
-import re
-import tempfile
-import matplotlib.pyplot as plt
+# @title Run CBS Sports Pick'em Simulation (Teal)
 import numpy as np
 import pandas as pd
 import requests
-import seaborn as sns
-import streamlit as st
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-
-st.set_page_config(layout="wide", page_title="NFL CBS Sports Pick'em Pool Simulation")
-
-# Compact CSS styling for mobile landscape view
-st.markdown(
-    """
-    <style>
-        .block-container { padding-top: 1rem; padding-bottom: 1rem; }
-        h1 { font-size: 1.5rem !important; margin-bottom: 0.2rem !important; }
-        h3 { font-size: 1.1rem !important; margin-top: 0.5rem !important; margin-bottom: 0.3rem !important; }
-        p { margin-bottom: 0.3rem !important; }
-        th { text-align: center !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
+import itertools
+import scipy.stats as stats
+import re
+from datetime import datetime, timedelta, timezone
 
 # =========================================================
-# 1. GOOGLE DRIVE SECURE FILE DOWNLOADER
+# 1. DYNAMICALLY LOAD ALL_POOL_PICKS (WEB-FIRST / EXCEL FALLBACK)
 # =========================================================
-@st.cache_data(ttl=600)
-def load_excel_from_gdrive():
-    try:
-        creds_json = base64.b64decode(st.secrets["gdrive_b64"]).decode("utf-8")
-        creds_dict = json.loads(creds_json)
+EXCEL_FILE_PATH = '/content/drive/MyDrive/Colab Notebooks/CBSSPORTS PICKEM Files/CBSSPORTS Pickem Weekly Picks.xlsx'
 
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp:
-            json.dump(creds_dict, temp)
-            temp_path = temp.name
-
-        creds = service_account.Credentials.from_service_account_file(
-            temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-        )
-        service = build("drive", "v3", credentials=creds)
-        file_id = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"
-
-        request = service.files().get_media(fileId=file_id)
-        file_buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_buffer, request)
-
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-
-        file_buffer.seek(0)
-        df = pd.read_excel(file_buffer, sheet_name=0)
-        return df
-    except Exception as e:
-        st.error(f"Error loading Excel from Google Drive: {e}")
-        return None
-
-
-# =========================================================
-# 2. AUTOMATED ESPN SCOREBOARD FETCHER
-# =========================================================
-@st.cache_data(ttl=300)
-def fetch_espn_nfl_data():
-    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-    completed_winners = []
-    live_probabilities = {}
-    pairing_map = []
-    active_games_count = 0
-
-    try:
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            for event in data.get("events", []):
-                competitions = event.get("competitions", [])
-                if not competitions:
-                    continue
-                comp = competitions[0]
-
-                status_type = (
-                    comp.get("status", {}).get("type", {}).get("name", "")
-                )
-                is_final = status_type == "STATUS_FINAL"
-                is_in_progress = status_type in ["STATUS_IN_PROGRESS", "STATUS_HALFTIME"]
-
-                if is_in_progress:
-                    active_games_count += 1
-
-                competitors = comp.get("competitors", [])
-                home_team, away_team = None, None
-                home_winner, away_winner = False, False
-
-                for team_info in competitors:
-                    team_abbr = team_info.get("team", {}).get("abbreviation", "")
-                    is_home = team_info.get("homeAway") == "home"
-                    winner = team_info.get("winner", False)
-
-                    if is_home:
-                        home_team = team_abbr
-                        home_winner = winner
-                    else:
-                        away_team = team_abbr
-                        away_winner = winner
-
-                if home_team and away_team:
-                    pairing_map.append((home_team, away_team))
-                    if is_final:
-                        if home_winner:
-                            completed_winners.append(home_team)
-                            live_probabilities[home_team] = 1.0
-                            live_probabilities[away_team] = 0.0
-                        elif away_winner:
-                            completed_winners.append(away_team)
-                            live_probabilities[away_team] = 1.0
-                            live_probabilities[home_team] = 0.0
-                    else:
-                        live_probabilities[home_team] = 0.5
-                        live_probabilities[away_team] = 0.5
-    except Exception as e:
-        st.warning(f"Could not connect to ESPN API: {e}")
-
-    return completed_winners, live_probabilities, pairing_map, active_games_count
-
-
-# Load Data
-picks_df = load_excel_from_gdrive()
-
-# =========================================================
-# 3. RUN SIMULATION & RENDER DASHBOARD
-# =========================================================
-st.title("🏈 CBS Sports Pick'em Pool Monte Carlo Dashboard")
-
-if picks_df is not None:
-    parsed_picks = {}
+def parse_pool_picks(picks_df):
     game_cols = [
-        col
-        for col in picks_df.columns
-        if any(
-            day in str(col)
-            for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat', '(']
-        ) and str(col).lower() not in ['players', 'total', 'ytd', 'season', 'overall']
+        col for col in picks_df.columns
+        if any(day in str(col) for day in ['1st', 'Thu', 'Sun', 'Mon', 'Tue', 'Wed', 'Fri', 'Sat'])
     ]
-
-    if not game_cols:
-        game_cols = [c for c in picks_df.columns[3:]]
-
+    parsed_picks = {}
     col_to_teams = {}
-    for col in game_cols:
-        match_val = str(picks_df.loc[0, col]).strip()
-        if pd.notna(match_val) and match_val != 'nan':
-            col_to_teams[col] = match_val
+    player_rows = picks_df
 
-    total_games = len(col_to_teams) if len(col_to_teams) > 0 else 16
+    if not picks_df.empty:
+        first_row = picks_df.iloc[0]
+        first_player = first_row.get('Players')
+        if pd.isna(first_player) or str(first_player).strip() in ['', '-', 'NaN']:
+            player_rows = picks_df.iloc[1:]
+            for col in game_cols:
+                match_val = first_row[col]
+                if pd.notna(match_val) and str(match_val).strip():
+                    col_to_teams[col] = str(match_val).strip()
 
-    for index in range(1, len(picks_df)):
-        player_name = picks_df.loc[index, 'Players']
+    for _, row in player_rows.iterrows():
+        player_name = row.get('Players')
         if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
             continue
         player_name = str(player_name).strip()
-        player_name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
+        player_name = re.sub(r'^\s*\d*(?:st|nd|rd|th)?\s*', '', player_name).strip()
         player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
 
         parsed_picks[player_name] = {}
-        for col, match_str in col_to_teams.items():
-            pick_val = str(picks_df.loc[index, col]).strip()
-            if pd.notna(pick_val) and '(' in pick_val and ')' in pick_val:
-                match = re.match(r'([A-Za-z]+)\((\d+)\)', pick_val)
+        for col in game_cols:
+            pick_val = row[col]
+            if pd.notna(pick_val) and '(' in str(pick_val) and ')' in str(pick_val):
+                match = re.match(r"([A-Za-z]+)\((\d+)\)", str(pick_val).strip())
                 if match:
                     team = match.group(1).upper()
+                    team = {'JAX': 'JAC'}.get(team, team)
                     points = int(match.group(2))
                     parsed_picks[player_name][team] = points
 
-    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT = (
-        fetch_espn_nfl_data()
-    )
+    return parsed_picks, col_to_teams
 
-    players = list(parsed_picks.keys())
-    n_players = len(players)
-    completed_games_count = len(COMPLETED_WINNERS)
+if 'ALL_POOL_PICKS' not in globals() or not ALL_POOL_PICKS:
+    ALL_POOL_PICKS = {}
 
-    st.info(
-        f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active."
-    )
+    if 'SHEET_CSV_URL' in globals() and SHEET_CSV_URL:
+        print("⏳ Attempting to load picks from your Google Sheets Web Link...")
+        try:
+            picks_df = pd.read_csv(SHEET_CSV_URL)
+            parsed_picks, col_to_teams = parse_pool_picks(picks_df)
+            ALL_POOL_PICKS = parsed_picks
+            print(f"SUCCESS: Loaded {len(ALL_POOL_PICKS)} players from Google Sheet Web Link!")
+        except Exception as e:
+            print(f"★ Google Sheets Web Link loading failed: {e}. Falling back to local Drive...")
 
-    locked_pts_list = []
-    simulated_pts_list = []
-    active_proj_list = []
-    max_pts_list = []
-    root_for_list = []
-    ytd_total_list = []
+    if not ALL_POOL_PICKS:
+        try:
+            picks_df = pd.read_excel(EXCEL_FILE_PATH)
+            parsed_picks, col_to_teams = parse_pool_picks(picks_df)
+            ALL_POOL_PICKS = parsed_picks
+            print(f"Successfully parsed picks for {len(ALL_POOL_PICKS)} players from Excel!")
+        except Exception as e:
+            print(f"Error loading/parsing Excel file: {e}. Falling back to default empty state.")
+            ALL_POOL_PICKS = {}
+else:
+    print(f"Using {len(ALL_POOL_PICKS)} players currently loaded in memory.")
 
-    ytd_column_name = picks_df.columns[2] if len(picks_df.columns) > 2 else None
+# =========================================================
+# 2. FREE ESPN API MULTI-WEEK SEARCH FOR ALIGNMENT
+# =========================================================
+ESPN_TEAM_MAP = {
+    'ARI': 'ARI', 'ATL': 'ATL', 'BAL': 'BAL', 'BUF': 'BUF', 'CAR': 'CAR', 'CHI': 'CHI',
+    'CIN': 'CIN', 'CLE': 'CLE', 'DAL': 'DAL', 'DEN': 'DEN', 'DET': 'DET', 'GB': 'GB',
+    'HOU': 'HOU', 'IND': 'IND', 'JAX': 'JAC', 'JAC': 'JAC', 'KC': 'KC', 'LV': 'LV', 'LAC': 'LAC',
+    'LAR': 'LAR', 'MIA': 'MIA', 'MIN': 'MIN', 'NE': 'NE', 'NO': 'NO', 'NYG': 'NYG',
+    'NYJ': 'NYJ', 'PHI': 'PHI', 'PIT': 'PIT', 'SF': 'SF', 'SEA': 'SEA', 'TB': 'TB',
+    'TEN': 'TEN', 'WSH': 'WAS', 'WAS': 'WAS'
+}
 
-    pending_teams_in_slate = [
-        t for t, p in LIVE_PROBABILITIES.items() if p not in (1.0, 0.0)
-    ]
+def spread_to_prob(spread):
+  return stats.norm.cdf(-spread, loc=0, scale=13.8)
 
-    for p in players:
-        player_row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
-        
-        base_ytd = 0
-        if not player_row.empty and ytd_column_name is not None:
-            try:
-                base_ytd = float(player_row.iloc[0][ytd_column_name])
-            except:
-                base_ytd = 0
+# Populate matchups from Excel headers
+active_match_headers = list(col_to_teams.values()) if 'col_to_teams' in globals() else []
+print(f"ፔ Active Weekly Slate Matchups (Excel): {active_match_headers}")
 
-        locked = sum(
-            parsed_picks[p].get(t, 0)
-            for t in COMPLETED_WINNERS
-            if t in parsed_picks[p]
-        )
-        locked_pts_list.append(locked)
+LIVE_PROBABILITIES = {}
+LIVE_WINNING_TEAMS = []
+LIVE_CURRENT_LEADERS = []
+completed_games_count = 0
 
-        ytd_total_list.append(int(round(base_ytd + locked)))
+# Multi-week historical search to locate these exact matchups
+print("🔍 Searching through NFL schedule weeks to match Excel slate...")
+matched_games = {}
+for week in range(1, 19):
+    url = f"https://site.api.espn.com/apis/site/v2/sports/american-football/nfl/scoreboard?week={week}"
+    try:
+        res = requests.get(url).json()
+        for event in res.get('events', []):
+            competition = event.get('competitions', [{}])[0]
+            competitors = competition.get('competitors', [])
+            home = next(c for c in competitors if c.get('homeAway') == 'home')
+            away = next(c for c in competitors if c.get('homeAway') == 'away')
+            h_code = ESPN_TEAM_MAP.get(home.get('team', {}).get('abbreviation', ''), '').upper()
+            a_code = ESPN_TEAM_MAP.get(away.get('team', {}).get('abbreviation', ''), '').upper()
+            status_state = event.get('status', {}).get('type', {}).get('state', '')
+            status_name = event.get('status', {}).get('type', {}).get('name', '')
+            completed = (status_state == 'post') or (status_name in ['STATUS_FINAL', 'STATUS_FINAL_OVERTIME'])
 
-        live_winning_points = sum(
-            parsed_picks[p].get(t, 0)
-            for t, prob in LIVE_PROBABILITIES.items()
-            if prob == 1.0 and t in parsed_picks[p] and t not in COMPLETED_WINNERS
-        )
-        active_proj = locked + live_winning_points
-        active_proj_list.append(active_proj)
+            for m in active_match_headers:
+                if (h_code and a_code) and ((h_code in m) and (a_code in m)):
+                    h_score = int(home.get('score', 0))
+                    a_score = int(away.get('score', 0))
+                    matched_games[m] = {
+                        'completed': completed,
+                        'home': h_code,
+                        'away': a_code,
+                        'home_score': h_score,
+                        'away_score': a_score
+                    }
+    except Exception as e:
+        continue
 
-        active_expected = sum(
-            parsed_picks[p].get(t, 0) * LIVE_PROBABILITIES.get(t, 0.5)
-            for t in LIVE_PROBABILITIES
-            if LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
-            and t in parsed_picks[p]
-        )
-        simulated_pts = locked + active_expected
-        simulated_pts_list.append(simulated_pts)
-
-        max_possible_points = locked + sum(
-            parsed_picks[p].get(t, 0)
-            for t in pending_teams_in_slate
-            if t in parsed_picks[p]
-        )
-        max_pts_list.append(max_possible_points)
-
-        all_player_picks = parsed_picks[p]
-        pending_picks = [
-            (t, pts) for t, pts in all_player_picks.items() 
-            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
-        ]
-        pending_picks.sort(key=lambda x: x[1], reverse=True)
-        top_roots = [f"{t}({pts})" for t, pts in pending_picks[:3]]
-        root_for_list.append(", ".join(top_roots) if top_roots else "-")
-
-    # Build DataFrame
-    sim_results = pd.DataFrame({
-        'Player': players,
-        'Locked': locked_pts_list,
-        'Locked YTD Total': ytd_total_list,
-        'w/Active': active_proj_list,
-        'Max': max_pts_list,
-        'Simulated': np.round(simulated_pts_list, 1),
-        'Root For': root_for_list,
-    })
-
-    # Calculate Weekly Rank (based on weekly Simulated points)
-    sim_results['Wk Rank'] = sim_results['Simulated'].rank(ascending=False, method='min').astype(int)
-
-    # Calculate YTD Rank (based on Locked YTD Total)
-    sim_results['YTD Rank'] = sim_results['Locked YTD Total'].rank(ascending=False, method='min').astype(int)
-
-    # =========================================================
-    # 4. RUN MONTE CARLO (10,000 SIMULATIONS)
-    # =========================================================
-    N_SIMS = 10000
-    pending_pairs = [
-        pair for pair in DEFAULT_PAIRING_MAP 
-        if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0)
-    ]
-    unresolved_teams = []
-    for t1, t2 in pending_pairs:
-        unresolved_teams.extend([t1, t2])
-
-    np.random.seed(42)
-
-    if len(pending_pairs) > 0:
-        sim_wins = np.zeros((N_SIMS, len(unresolved_teams)), dtype=bool)
-        for pair_idx, (t1, t2) in enumerate(pending_pairs):
-            prob_t1 = LIVE_PROBABILITIES.get(t1, 0.5)
-            prob_t2 = LIVE_PROBABILITIES.get(t2, 0.5)
-            tot_p = prob_t1 + prob_t2
-            if tot_p > 0:
-                prob_t1 = prob_t1 / tot_p
-
-            wins_t1 = np.random.rand(N_SIMS) < prob_t1
-            try:
-                t1_idx = unresolved_teams.index(t1)
-                t2_idx = unresolved_teams.index(t2)
-                sim_wins[:, t1_idx] = wins_t1
-                sim_wins[:, t2_idx] = ~wins_t1
-            except ValueError:
-                pass
-
-        weekly_points = np.zeros((n_players, N_SIMS))
-        for p_idx, player in enumerate(players):
-            locked_part = locked_pts_list[p_idx]
-            weekly_points[p_idx, :] = locked_part
-            for t_idx, team in enumerate(unresolved_teams):
-                picks_val = parsed_picks[player].get(team, 0)
-                weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
-
-        max_weekly_scores = np.max(weekly_points, axis=0)
-        weekly_winners = weekly_points == max_weekly_scores
-        weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
-        total_weekly_wins = np.sum(weekly_win_shares, axis=1)
-        sim_results['Sim Win%'] = np.round((total_weekly_wins / N_SIMS) * 100, 1)
+# Reconstruct live tracking based on correct historical/live matchups matched
+for m, g in matched_games.items():
+    h_code, a_code = g['home'], g['away']
+    h_score, a_score = g['home_score'], g['away_score']
+    if g['completed']:
+        completed_games_count += 1
+        if h_score > a_score:
+            LIVE_PROBABILITIES[h_code] = 1.0
+            LIVE_PROBABILITIES[a_code] = 0.0
+            LIVE_WINNING_TEAMS.append(h_code)
+        elif a_score > h_score:
+            LIVE_PROBABILITIES[a_code] = 1.0
+            LIVE_PROBABILITIES[h_code] = 0.0
+            LIVE_WINNING_TEAMS.append(a_code)
     else:
-        sim_results['Sim Win%'] = 0.0
+        if h_score > a_score:
+            LIVE_CURRENT_LEADERS.append(h_code)
+        elif a_score > h_score:
+            LIVE_CURRENT_LEADERS.append(a_code)
 
-    # Sort results by Weekly Simulated points
-    sorted_results = sim_results.sort_values(
-        by='Simulated', ascending=False
-    ).reset_index(drop=True)
+# Do not invent completed results when ESPN has no completed matchup data.
+if completed_games_count == 0:
+    print("★ No completed games matched your slate; treating all games as unresolved.")
 
-    # Reorder columns explicitly
-    column_order = [
-        'Wk Rank',
-        'Player',
-        'Locked',
-        'Locked YTD Total',
-        'YTD Rank',
-        'w/Active',
-        'Max',
-        'Simulated',
-        'Sim Win%',
-        'Root For'
-    ]
-    sorted_results = sorted_results[column_order]
+print(f"🎯 Dynamic alignment found {completed_games_count} completed games matching your Excel sheet matchups!")
 
-    # Display Interactive DataFrame
-    st.subheader("📊 Live Standings & Win Projections")
-    st.dataframe(
-        sorted_results,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Wk Rank": st.column_config.NumberColumn("Wk Rank", format="%d"),
-            "Player": st.column_config.TextColumn("Player"),
-            "Locked": st.column_config.NumberColumn("Locked", format="%d"),
-            "Locked YTD Total": st.column_config.NumberColumn("Locked YTD Total", format="%d"),
-            "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
-            "w/Active": st.column_config.NumberColumn("w/Active", format="%d"),
-            "Max": st.column_config.NumberColumn("Max", format="%d"),
-            "Simulated": st.column_config.NumberColumn("Simulated", format="%.1f"),
-            "Sim Win%": st.column_config.NumberColumn("Sim Win%", format="%.1f%%"),
-            "Root For": st.column_config.TextColumn("Root For"),
-        },
+# Fallback probability mapping for remaining unresolved teams
+DEFAULT_SLATE = {
+    'CHI': 0.50, 'PIT': 0.50, 'SF': 0.60, 'ATL': 0.40, 'TB': 0.45, 'CAR': 0.55,
+    'NYG': 0.35, 'HOU': 0.65, 'MIN': 0.50, 'NYJ': 0.50, 'MIA': 0.50, 'CLE': 0.40, 'DEN': 0.60,
+    'DET': 0.50, 'LAR': 0.55, 'LV': 0.45, 'KC': 0.60, 'SEA': 0.40, 'DAL': 0.50,
+    'CIN': 0.55, 'NE': 0.30, 'BAL': 0.65, 'BUF': 0.60, 'ARI': 0.40, 'IND': 0.45,
+    'NO': 0.50, 'PHI': 0.60, 'WSH': 0.45, 'TEN': 0.40, 'GB': 0.55, 'JAC': 0.35
+}
+
+for team, prob in DEFAULT_SLATE.items():
+  if team not in LIVE_PROBABILITIES:
+    LIVE_PROBABILITIES[team] = prob
+
+for team in LIVE_WINNING_TEAMS:
+  LIVE_PROBABILITIES[team] = 1.0
+
+# =========================================================
+# 4. CALCULATE STANDINGS & RUN MONTE CARLO (IF DATA EXISTS)
+# =========================================================
+if not ALL_POOL_PICKS:
+  print("\n★ Cannot run simulation: No player picks are currently loaded.")
+else:
+  sim_results = pd.DataFrame({'Player': list(ALL_POOL_PICKS.keys())})
+
+  locked_pts_list = []
+  current_pts_list = []
+  projected_pts_list = []
+  cbs_score_pts_list = []
+  max_pts_list = []
+
+  total_games = len(col_to_teams) if 'col_to_teams' in locals() and col_to_teams else 14
+
+  # Identify which teams are still playing / pending
+  pending_teams_in_slate = []
+  for team, prob in LIVE_PROBABILITIES.items():
+    if prob not in (1.0, 0.0):
+      pending_teams_in_slate.append(team)
+
+  for p in ALL_POOL_PICKS:
+    # Only sum points for teams the player actually selected that won (probability == 1.0)
+    locked = sum(ALL_POOL_PICKS[p].get(t, 0) for t in LIVE_WINNING_TEAMS if t in ALL_POOL_PICKS[p])
+    locked_pts_list.append(locked)
+
+    current = locked
+    current_pts_list.append(current)
+
+    cbs_score = locked + sum(ALL_POOL_PICKS[p].get(t, 0) for t in LIVE_CURRENT_LEADERS if t in ALL_POOL_PICKS[p])
+    cbs_score_pts_list.append(cbs_score)
+
+    active_expected = sum(ALL_POOL_PICKS[p].get(t, 0) * LIVE_PROBABILITIES.get(t, 0.5) for t in LIVE_PROBABILITIES if LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0) and t in ALL_POOL_PICKS[p])
+    projected = locked + active_expected
+    projected_pts_list.append(projected)
+
+    # A missing probability means unresolved, not a confirmed loss.
+    max_possible_points = sum(
+        points for team, points in ALL_POOL_PICKS[p].items()
+        if LIVE_PROBABILITIES.get(team, 0.5) != 0.0
     )
+    max_pts_list.append(max_possible_points)
 
-    st.markdown(
-        "[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)"
+  sim_results['Games Completed'] = f"{completed_games_count}/{total_games}"
+  sim_results['Locked Pts'] = locked_pts_list
+  sim_results['Current Pts'] = current_pts_list
+  sim_results['Proj CBS Sports Pts'] = cbs_score_pts_list
+  sim_results['Proj Pts'] = projected_pts_list
+  sim_results['Max Pts (All Picks Win)'] = max_pts_list
+
+  # =========================================================
+  # 5. MONTE CARLO SIMULATION & DYNAMIC LEVERAGE ENGINE
+  # =========================================================
+  N_SIMS = 10000
+  players = list(ALL_POOL_PICKS.keys())
+  n_players = len(players)
+
+  pairing_map = [
+      ('CHI', 'NE'),
+      ('PIT', 'NO'),
+      ('SF', 'ATL'),
+      ('CIN', 'BAL'),
+      ('TB', 'CAR'),
+      ('NYG', 'HOU'),
+      ('IND', 'MIN'),
+      ('MIA', 'NYJ'),
+      ('CLE', 'TEN'),
+      ('DEN', 'ARI'),
+      ('GB', 'DET'),
+      ('LAR', 'LV'),
+      ('KC', 'SEA'),
+      ('DAL', 'PHI')
+  ]
+
+  pending_pairs = []
+  unresolved_teams = []
+
+  for team1, team2 in pairing_map:
+    p1 = LIVE_PROBABILITIES.get(team1, 0.5)
+    p2 = LIVE_PROBABILITIES.get(team2, 0.5)
+    if p1 not in (1.0, 0.0) or p2 not in (1.0, 0.0):
+      pending_pairs.append((team1, team2))
+      unresolved_teams.extend([team1, team2])
+
+  np.random.seed(42)
+  sim_wins_dict = {}
+  sim_wins = np.zeros((N_SIMS, len(unresolved_teams)), dtype=bool)
+
+  for pair_idx, (t1, t2) in enumerate(pending_pairs):
+    prob_t1 = LIVE_PROBABILITIES.get(t1, 0.5)
+    prob_t2 = LIVE_PROBABILITIES.get(t2, 0.5)
+    tot_p = prob_t1 + prob_t2
+    if tot_p > 0:
+      prob_t1 = prob_t1 / tot_p
+
+    wins_t1 = np.random.rand(N_SIMS) < prob_t1
+    wins_t2 = ~wins_t1
+
+    t1_idx = unresolved_teams.index(t1)
+    t2_idx = unresolved_teams.index(t2)
+
+    sim_wins[:, t1_idx] = wins_t1
+    sim_wins[:, t2_idx] = wins_t2
+
+    sim_wins_dict[t1] = wins_t1
+    sim_wins_dict[t2] = wins_t2
+
+  weekly_points = np.zeros((n_players, N_SIMS))
+  for p_idx, player in enumerate(players):
+    locked_part = locked_pts_list[p_idx]
+    weekly_points[p_idx, :] = locked_part
+    for t_idx, team in enumerate(unresolved_teams):
+      picks_val = ALL_POOL_PICKS[player].get(team, 0)
+      weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
+
+  max_weekly_scores = np.max(weekly_points, axis=0)
+  weekly_winners = (weekly_points == max_weekly_scores)
+  weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
+  total_weekly_wins = np.sum(weekly_win_shares, axis=1)
+
+  n_unresolved = len(pending_pairs)
+  outcomes_grids = list(itertools.product([0, 1], repeat=min(n_unresolved, 10)))
+
+  math_status_map = {p: 0 for p in players}
+  for outcome in outcomes_grids:
+    path_outcome_wins = {}
+    for idx, (team1, team2) in enumerate(pending_pairs[:10]):
+      if outcome[idx] == 0:
+        path_outcome_wins[team1] = 1.0
+        path_outcome_wins[team2] = 0.0
+      else:
+        path_outcome_wins[team1] = 0.0
+        path_outcome_wins[team2] = 1.0
+
+    scenario_scores = {}
+    for p in players:
+      score = locked_pts_list[players.index(p)]
+      for t, w in path_outcome_wins.items():
+        if w == 1.0:
+          score += ALL_POOL_PICKS[p].get(t, 0)
+      scenario_scores[p] = score
+
+    max_pool_score = max(scenario_scores.values())
+    for p, score in scenario_scores.items():
+      if score == max_pool_score:
+        math_status_map[p] += 1
+
+  leverage_swings_list = []
+  for p_idx, player in enumerate(players):
+    # Check if this player has non-zero configuration picks overall
+    has_active_picks = any(v > 0 for v in ALL_POOL_PICKS[player].values())
+
+    if not has_active_picks:
+      leverage_swings_list.append("")
+      continue
+
+    player_alive = (math_status_map[player] > 0)
+    swings = []
+
+    for (t1, t2) in pending_pairs:
+      p_t1 = ALL_POOL_PICKS[player].get(t1, 0)
+      p_t2 = ALL_POOL_PICKS[player].get(t2, 0)
+      chosen_team = t1 if p_t1 > p_t2 else t2
+      conf = max(p_t1, p_t2)
+
+      if player_alive:
+        pts_if_t1 = weekly_points.copy()
+        pts_if_t1[p_idx, :] = np.where(sim_wins_dict[t1], weekly_points[p_idx, :], weekly_points[p_idx, :] + p_t1 - p_t2)
+        max_scores_t1 = np.max(pts_if_t1, axis=0)
+        win_share_t1 = np.sum((pts_if_t1[p_idx, :] == max_scores_t1) / np.sum(pts_if_t1 == max_scores_t1, axis=0)) / N_SIMS
+
+        pts_if_t2 = weekly_points.copy()
+        pts_if_t2[p_idx, :] = np.where(sim_wins_dict[t2], weekly_points[p_idx, :], weekly_points[p_idx, :] + p_t2 - p_t1)
+        max_scores_t2 = np.max(pts_if_t2, axis=0)
+        win_share_t2 = np.sum((pts_if_t2[p_idx, :] == max_scores_t2) / np.sum(pts_if_t2 == max_scores_t2, axis=0)) / N_SIMS
+
+        swing_val = abs(win_share_t1 - win_share_t2)
+        best_team = t1 if win_share_t1 > win_share_t2 else t2
+        best_conf = ALL_POOL_PICKS[player].get(best_team, 0)
+        swings.append((best_team, best_conf, swing_val))
+      else:
+        ev_t1 = p_t1 * LIVE_PROBABILITIES.get(t1, 0.5)
+        ev_t2 = p_t2 * LIVE_PROBABILITIES.get(t2, 0.5)
+        swing_val = abs(ev_t1 - ev_t2)
+        swings.append((chosen_team, conf, swing_val))
+
+    swings.sort(key=lambda x: x[2], reverse=True)
+    top_4 = swings[:4]
+
+    # Only include non-zero point selections in interest labels
+    interest_labels = [f"{team} ({conf}pt)" for team, conf, val in top_4 if conf > 0]
+    leverage_swings_list.append(", ".join(interest_labels))
+
+  sim_results['Simulated Weekly 1st Place %'] = total_weekly_wins / N_SIMS * 100
+  sim_results['Math Survival Count'] = [math_status_map[p] for p in players]
+  sim_results['Best Rooting Interests'] = leverage_swings_list
+  sim_results['Proj 1st Place %'] = sim_results['Simulated Weekly 1st Place %']
+
+  # Updated visual headers: placed "Max Pts" right after "Current Pts" and before "Proj CBS", with decreased width (from 25 to 18)
+  header_line1 = f"{'Proj':<6} {'Player':<18} {'Games':>10} {'Locked':>8} {'Current':>8} {'Max Pts':>18} {'Proj CBS':>14} {'Proj':>8}  {'Simulated Weekly':<12}    {'Best Rooting Interests'}"
+  header_line2 = f"{'Rank':<6} {'':<18} {'Completed':>10} {'Pts':>8} {'Pts':>8} {'(All Picks Win)':>18} {'Sports Pts':>14} {'Pts':>8}  {'1st Place %':<12}"
+  title_header = f"ጁ ESPN Powered Pick'em Projections (10,000 Monte Carlo Simulations via Spreads)"
+
+  print('\n' + '=' * 170)
+  print(title_header)
+  print('=' * 170)
+  print(header_line1)
+  print(header_line2)
+  print('-' * 170)
+
+  for rank, (idx, row) in enumerate(sim_results.sort_values(by='Proj Pts', ascending=False).iterrows(), start=1):
+    win_pct = row['Proj 1st Place %']
+    math_surv = row['Math Survival Count']
+
+    if math_surv == 0:
+      win_pct_str = f"{' -':>12}"
+    elif win_pct < 0.5:
+      win_pct_str = f"{'Under 0.5%':>12}"
+    else:
+      win_pct_str = f"{win_pct:>11.1f}%"
+
+    print(
+        f"{rank:<6} {row['Player']:<18} {row['Games Completed']:>10}"
+        f" {row['Locked Pts']:>8d} {row['Current Pts']:>8d} {row['Max Pts (All Picks Win)']:>18d} {row['Proj CBS Sports Pts']:>14d} {row['Proj Pts']:>8.1f}"
+        f"  {win_pct_str:<12}    {row['Best Rooting Interests']}"
     )
-
-    # =========================================================
-    # 5. CHART PLOTTING
-    # =========================================================
-    st.subheader("📈 Projected vs Current Performance")
-    fig, ax = plt.subplots(figsize=(6, 4))
-
-    plot_df = (
-        sorted_results.head(15)
-        .melt(id_vars=['Player'], value_vars=['Locked', 'Simulated'])
-    )
-
-    sns.barplot(
-        data=plot_df,
-        x='value',
-        y='Player',
-        hue='variable',
-        ax=ax,
-        palette=['#95a5a6', '#00cec9'],
-    )
-
-    ax.tick_params(axis='y', labelsize=8)
-    ax.tick_params(axis='x', labelsize=8)
-    ax.set_ylabel('Player', fontsize=9)
-    ax.set_xlabel('Points', fontsize=9)
-    ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
-
-    for container in ax.containers:
-        ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
-
-    plt.tight_layout()
-    st.pyplot(fig)
+  print('=' * 170 + '\n')
