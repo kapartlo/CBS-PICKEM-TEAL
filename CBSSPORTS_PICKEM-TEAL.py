@@ -36,6 +36,10 @@ st.markdown(
 @st.cache_data(ttl=600)
 def load_excel_from_gdrive():
     try:
+        if "gdrive_b64" not in st.secrets:
+            st.error("Missing 'gdrive_b64' in Streamlit secrets!")
+            return None
+
         creds_json = base64.b64decode(st.secrets["gdrive_b64"]).decode("utf-8")
         creds_dict = json.loads(creds_json)
 
@@ -61,9 +65,9 @@ def load_excel_from_gdrive():
         df = pd.read_excel(file_buffer, sheet_name=0)
         return df
     except Exception as e:
-        st.error(f"Error loading Excel from Google Drive: {e}")
+        # This will now display the exact error right on your screen so we can see it
+        st.error(f"Error loading Excel from Google Drive: {str(e)}")
         return None
-
 
 # =========================================================
 # 2. AUTOMATED ESPN SCOREBOARD FETCHER
