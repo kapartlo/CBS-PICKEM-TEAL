@@ -49,6 +49,16 @@ def load_excel_from_gdrive():
         st.error(f"Error loading Excel: {e}")
         return None
 
+def spread_to_win_prob(spread):
+    """Converts a point spread (e.g. -7.0) to an estimated win probability using normal distribution."""
+    if spread is None:
+        return 0.5
+    # Standard deviation for NFL margin of victory is roughly 13.5 points
+    import scipy.stats as stats
+    # Negative spread means favorite, so win probability > 0.5
+    prob = stats.norm.cdf(-spread / 13.5)
+    return float(np.clip(prob, 0.05, 0.95))
+
 @st.cache_data(ttl=300)
 def fetch_espn_nfl_data():
     url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
@@ -59,8 +69,11 @@ def fetch_espn_nfl_data():
             for event in res.json().get("events", []):
                 comp = event.get("competitions", [{}])[0]
                 status = comp.get("status", {}).get("type", {}).get("name", "")
-                is_final, is_live = status == "STATUS_FINAL", status in ["STATUS_IN_PROGRESS", "STATUS_HALFTIME"]
-                if is_live: active_games += 1
+                is_final = (status == "STATUS_FINAL")
+                is_live = (status in ["STATUS_IN_PROGRESS", "STATUS_HALFTIME"])
+                if is_live: 
+                    active_games += 1
+                
                 competitors = comp.get("competitors", [])
                 home_team, away_team, home_win, away_win = None, None, False, False
                 for t in competitors:
@@ -69,6 +82,24 @@ def fetch_espn_nfl_data():
                         home_team, home_win = abbr, t.get("winner", False)
                     else:
                         away_team, away_win = abbr, t.get("winner", False)
+                
+                # Extract odds/spread if available
+                odds_data = comp.get("odds", [{}])[0] if comp.get("odds") else {}
+                details = odds_data.get("details", "")
+                home_prob = 0.5
+                
+                # Try parsing spread string (e.g. "BUF -7.0")
+                if details and home_team and away_team:
+                    match = re.search(r'([A-Za-z]+)\s+([+-]?\d+\.?\d*)', details)
+                    if match:
+                        fav_team = match.group(1).upper()
+                        spread_val = float(match.group(2))
+                        fav_prob = spread_to_win_prob(spread_val)
+                        if fav_team == home_team:
+                            home_prob = fav_prob
+                        else:
+                            home_prob = 1.0 - fav_prob
+
                 if home_team and away_team:
                     pairing_map.append((home_team, away_team))
                     if is_final:
@@ -79,7 +110,8 @@ def fetch_espn_nfl_data():
                             completed_winners.append(away_team)
                             live_probabilities[away_team], live_probabilities[home_team] = 1.0, 0.0
                     else:
-                        live_probabilities[home_team], live_probabilities[away_team] = 0.5, 0.5
+                        live_probabilities[home_team] = home_prob
+                        live_probabilities[away_team] = 1.0 - home_prob
     except Exception as e:
         st.warning(f"ESPN API warning: {e}")
     return completed_winners, live_probabilities, pairing_map, active_games
@@ -160,13 +192,15 @@ if picks_df is not None:
         for p_idx in range(n_players): weekly_points[p_idx, :] = locked_pts[p_idx]
         sim_win_pcts = np.zeros(n_players)
 
+    median_scores = np.round(np.median(weekly_points, axis=1)).astype(int) if n_players > 0 else []
+
     sim_results = pd.DataFrame({
         'Player': players,
         'Locked': locked_pts,
         'Locked YTD Total': ytd_totals,
         'Locked + Active': active_proj,
         'Max': max_pts,
-        'Sim Median Pts': np.round(np.median(weekly_points, axis=1), 1) if n_players > 0 else [],
+        'Sim Median Pts': median_scores,
         'Sim Win%': sim_win_pcts,
         'Root For': root_for,
     }) if n_players > 0 else pd.DataFrame()
@@ -187,7 +221,7 @@ if picks_df is not None:
             "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
             "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
             "Max": st.column_config.NumberColumn("Max", format="%d"),
-            "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%.1f"),
+            "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
             "Sim Win%": st.column_config.NumberColumn("Sim Win%", format="%.1f%%"),
             "Root For": st.column_config.TextColumn("Root For"),
         })
