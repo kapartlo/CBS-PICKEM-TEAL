@@ -145,13 +145,11 @@ picks_df = load_excel_from_gdrive()
 st.title("🏈 CBS Sports Pick'em Pool Standings and Win Projections")
 
 if picks_df is not None:
-    # Identify game columns (all columns from index 3 onwards, excluding TIE)
     game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
 
     parsed_picks = {}
     total_games = len(game_cols) if len(game_cols) > 0 else 16
 
-    # Parse player picks starting from row 1 onwards
     for index in range(1, len(picks_df)):
         player_name = picks_df.loc[index, 'Players']
         if pd.isna(player_name) or str(player_name).strip() in ['', '-', 'NaN']:
@@ -181,11 +179,10 @@ if picks_df is not None:
         f"**Week Status:** {completed_games_count} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players Parsed:** {n_players}"
     )
 
-    # --- RAW EXCEL DATA VIEWER PLACED HERE ---
+    # Raw Excel Data Debug Viewer
     with st.expander("📊 View Raw Excel Data"):
         st.write("Columns found:", picks_df.columns.tolist())
         st.dataframe(picks_df, use_container_width=True, hide_index=True)
-    # ----------------------------------------
 
     locked_pts_list = []
     active_proj_list = []
@@ -267,4 +264,114 @@ if picks_df is not None:
                 t1_idx = unresolved_teams.index(t1)
                 t2_idx = unresolved_teams.index(t2)
                 sim_wins[:, t1_idx] = wins_t1
-                sim_wins[:, t2_idx] = ~wins_
+                sim_wins[:, t2_idx] = ~wins_t1
+            except ValueError:
+                pass
+
+        for p_idx, player in enumerate(players):
+            locked_part = locked_pts_list[p_idx]
+            weekly_points[p_idx, :] = locked_part
+            for t_idx, team in enumerate(unresolved_teams):
+                picks_val = parsed_picks[player].get(team, 0)
+                weekly_points[p_idx, :] += sim_wins[:, t_idx] * picks_val
+
+        max_weekly_scores = np.max(weekly_points, axis=0)
+        weekly_winners = weekly_points == max_weekly_scores
+        weekly_win_shares = weekly_winners / np.sum(weekly_winners, axis=0)
+        total_weekly_wins = np.sum(weekly_win_shares, axis=1)
+        sim_win_pcts = np.round((total_weekly_wins / N_SIMS) * 100, 1)
+    else:
+        for p_idx in range(n_players):
+            weekly_points[p_idx, :] = locked_pts_list[p_idx]
+        sim_win_pcts = np.zeros(n_players)
+
+    median_sim_scores = np.median(weekly_points, axis=1) if n_players > 0 else []
+
+    sim_results = pd.DataFrame({
+        'Player': players,
+        'Locked': locked_pts_list,
+        'Locked YTD Total': ytd_total_list,
+        'Locked + Active': active_proj_list,
+        'Max': max_pts_list,
+        'Sim Median Pts': np.round(median_sim_scores, 1),
+        'Sim Win%': sim_win_pcts,
+        'Root For': root_for_list,
+    }) if n_players > 0 else pd.DataFrame()
+
+    if not sim_results.empty:
+        sim_results['Wk Rank'] = sim_results['Sim Median Pts'].rank(ascending=False, method='min').astype(int)
+        sim_results['YTD Rank'] = sim_results['Locked YTD Total'].rank(ascending=False, method='min').astype(int)
+
+        sorted_results = sim_results.sort_values(
+            by='Sim Median Pts', ascending=False
+        ).reset_index(drop=True)
+
+        column_order = [
+            'Wk Rank',
+            'Player',
+            'Locked',
+            'Locked YTD Total',
+            'YTD Rank',
+            'Locked + Active',
+            'Max',
+            'Sim Median Pts',
+            'Sim Win%',
+            'Root For'
+        ]
+        sorted_results = sorted_results[column_order]
+
+        st.dataframe(
+            sorted_results,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Wk Rank": st.column_config.NumberColumn("Wk Rank", format="%d"),
+                "Player": st.column_config.TextColumn("Player"),
+                "Locked": st.column_config.NumberColumn("Locked", format="%d"),
+                "Locked YTD Total": st.column_config.NumberColumn("Locked YTD Total", format="%d"),
+                "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
+                "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
+                "Max": st.column_config.NumberColumn("Max", format="%d"),
+                "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%.1f"),
+                "Sim Win%": st.column_config.NumberColumn("Sim Win%", format="%.1f%%"),
+                "Root For": st.column_config.TextColumn("Root For"),
+            },
+        )
+
+        st.markdown(
+            "[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)"
+        )
+
+        # =========================================================
+        # 5. CHART PLOTTING
+        # =========================================================
+        st.subheader("📈 Projected vs Current Performance")
+        fig, ax = plt.subplots(figsize=(6, 4))
+
+        plot_df = (
+            sorted_results.head(15)
+            .melt(id_vars=['Player'], value_vars=['Locked', 'Sim Median Pts'])
+        )
+
+        sns.barplot(
+            data=plot_df,
+            x='value',
+            y='Player',
+            hue='variable',
+            ax=ax,
+            palette=['#95a5a6', '#00cec9'],
+        )
+
+        ax.tick_params(axis='y', labelsize=8)
+        ax.tick_params(axis='x', labelsize=8)
+        ax.set_ylabel('Player', fontsize=9)
+        ax.set_xlabel('Points', fontsize=9)
+        ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
+
+        for container in ax.containers:
+            ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
+
+        plt.tight_layout()
+        st.pyplot(fig)
+    else:
+        st.warning("No player picks could be parsed.")
