@@ -166,4 +166,4 @@ else:
         locked_pts.append(locked)
         ytd_totals.append(int(round(base_ytd + locked)))
         
-        live_winning_pts = sum(parsed
+        live_winning_pts = sum(parsed_picks
