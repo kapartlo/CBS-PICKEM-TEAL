@@ -138,15 +138,25 @@ picks_df = load_excel_from_gdrive()
 if picks_df is None:
     st.error("Failed to load Excel data from Google Drive. Please check your secrets configuration and internet connection.")
 else:
-    game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
+    # Dynamically find the player column and game columns
+    possible_player_cols = [c for c in picks_df.columns if any(k in str(c).lower() for k in ['player', 'name', 'unnamed: 0'])]
+    player_col = possible_player_cols[0] if possible_player_cols else picks_df.columns[0]
+    
+    ytd_candidates = [c for c in picks_df.columns if str(c).strip().upper() == 'YTD']
+    ytd_col = ytd_candidates[0] if ytd_candidates else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
+
+    game_cols = [col for col in picks_df.columns if col not in [player_col, ytd_col] and 'TIE' not in str(col).upper() and 'TOTAL' not in str(col).upper()]
     parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
 
-    for index in range(1, len(picks_df)):
-        raw_name = picks_df.loc[index, 'Players']
-        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: 
+    for index in range(len(picks_df)):
+        raw_name = picks_df.loc[index, player_col]
+        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN', 'Players', 'Player']: 
             continue
         name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
         name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
+        if not name or name.lower() == 'players':
+            continue
+            
         parsed_picks[name] = {}
         for col in game_cols:
             val = str(picks_df.loc[index, col]).strip()
@@ -165,14 +175,89 @@ else:
         st.dataframe(picks_df, use_container_width=True, hide_index=True)
 
     locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
-    ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
 
     for p in players:
-        row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
-        base_ytd = float(row.iloc[0][ytd_col]) if not row.empty and ytd_col else 0
+        row = picks_df[picks_df[player_col].astype(str).str.contains(p, na=False)]
+        base_ytd = float(row.iloc[0][ytd_col]) if not row.empty and ytd_col and pd.notna(row.iloc[0][ytd_col]) else 0
         
         locked = sum(parsed_picks[p].get(t, 0) for t in COMPLETED_WINNERS if t in parsed_picks[p])
         locked_pts.append(locked)
         
         ytd_locked_val = int(round(base_ytd + locked))
         ytd_totals.append(ytd_locked_val)
+        
+        live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
+        active_proj.append(locked + live_winning_pts)
+        
+        ytd_active_val = int(round(base_ytd + locked + live_winning_pts))
+        ytd_active_totals.append(ytd_active_val)
+        
+        max_possible = locked + sum(pts for t, pts in parsed_picks[p].items() if t not in DECIDED_GAMES)
+        max_pts.append(max_possible)
+        
+        pending_items = [(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)]
+        pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
+        root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "NONE")
+
+    remaining_cards = {
+        p: tuple(sorted([(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES]))
+        for p in players
+    }
+
+    N_SIMS = 10000
+    pending_pairs = [pair for pair in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0) and pair[0] not in DECIDED_GAMES]
+    unresolved = []
+    for t1, t2 in pending_pairs: unresolved.extend([t1, t2])
+
+    np.random.seed(42)
+    weekly_points = np.zeros((n_players, N_SIMS)) if n_players > 0 else np.zeros((1, N_SIMS))
+    sim_win_pcts_raw = np.zeros(n_players)
+
+    if len(pending_pairs) > 0 and n_players > 0:
+        sim_wins = np.zeros((N_SIMS, len(unresolved)), dtype=bool)
+        for t1, t2 in pending_pairs:
+            p1 = LIVE_PROBABILITIES.get(t1, 0.5)
+            p2 = LIVE_PROBABILITIES.get(t2, 0.5)
+            total_p = p1 + p2
+            p1_norm = p1 / total_p if total_p > 0 else 0.5
+            wins = np.random.rand(N_SIMS) < p1_norm
+            try:
+                sim_wins[:, unresolved.index(t1)] = wins
+                sim_wins[:, unresolved.index(t2)] = ~wins
+            except ValueError: pass
+
+        for p_idx, player in enumerate(players):
+            weekly_points[p_idx, :] = locked_pts[p_idx]
+            for t_idx, team in enumerate(unresolved):
+                weekly_points[p_idx, :] += sim_wins[:, t_idx] * parsed_picks[player].get(team, 0)
+
+        max_scores = np.max(weekly_points, axis=0)
+        win_shares = (weekly_points == max_scores) / np.sum(weekly_points == max_scores, axis=0)
+        sim_win_pcts_raw = (np.sum(win_shares, axis=1) / N_SIMS) * 100
+    elif n_players > 0:
+        for p_idx in range(n_players): weekly_points[p_idx, :] = locked_pts[p_idx]
+
+    median_scores = np.round(np.median(weekly_points, axis=1)).astype(int) if n_players > 0 else []
+    max_leading_locked = max(locked_pts) if locked_pts else 0
+
+    final_root_for = []
+    final_sim_win_pcts = []
+
+    for idx, p in enumerate(players):
+        p_score = active_proj[idx]
+        p_max = max_pts[idx]
+        raw_pct = sim_win_pcts_raw[idx]
+        
+        has_zero_ways = False
+        if p_max < max_leading_locked or p_max == 0 or len(parsed_picks[p]) == 0 or len(remaining_cards[p]) == 0:
+            has_zero_ways = True
+        else:
+            for other_idx, other_p in enumerate(players):
+                if p != other_p and len(parsed_picks[other_p]) > 0:
+                    if active_proj[other_idx] > p_score and remaining_cards[p] == remaining_cards[other_p]:
+                        has_zero_ways = True
+                        break
+                        
+        if has_zero_ways:
+            final_root_for.append("NONE")
+            final_sim_win_pct
