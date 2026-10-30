@@ -135,4 +135,13 @@ st.title("🏈 CBS Sports Pick'em Pool Standings and Win Projections")
 picks_df = load_excel_from_gdrive()
 
 if picks_df is None:
-    st.error("Failed to load Excel data
+    st.error("Failed to load Excel data from Google Drive. Please check your secrets configuration and internet connection.")
+else:
+    game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
+    parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
+
+    for index in range(1, len(picks_df)):
+        raw_name = picks_df.loc[index, 'Players']
+        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: 
+            continue
+        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name
