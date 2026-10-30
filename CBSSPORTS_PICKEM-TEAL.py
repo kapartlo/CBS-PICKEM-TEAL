@@ -281,7 +281,6 @@ else:
         sim_results['Wk Rank'] = sim_results['Locked + Active'].rank(ascending=False, method='min').astype(int)
         sim_results['YTD Rank'] = sim_results['YTD Locked'].rank(ascending=False, method='min').astype(int)
         
-        # Combine Wk Rank and Player into single Players column
         sim_results['Players'] = sim_results.apply(
             lambda row: f"{row['Wk Rank']}{get_ordinal_suffix(row['Wk Rank'])}  {row['Player']}", axis=1
         )
@@ -319,8 +318,8 @@ else:
 
         st.subheader("📈 Projected vs Current Performance")
         fig, ax = plt.subplots(figsize=(6, 4))
-        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts'])
-        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9'])
+        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Max', 'Sim Median Pts'])
+        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#f39c12', '#00cec9'])
         ax.tick_params(axis='y', labelsize=8)
         ax.tick_params(axis='x', labelsize=8)
         ax.set_ylabel('Players', fontsize=9)
