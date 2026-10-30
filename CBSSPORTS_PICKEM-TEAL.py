@@ -56,6 +56,11 @@ def spread_to_win_prob(spread):
     prob = stats.norm.cdf(-spread / 13.5)
     return float(np.clip(prob, 0.05, 0.95))
 
+def get_ordinal_suffix(n):
+    if 11 <= n <= 13:
+        return 'th'
+    return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+
 @st.cache_data(ttl=60)
 def fetch_espn_nfl_data():
     url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
@@ -156,18 +161,24 @@ else:
     with st.expander("📊 View Raw Pick Sheet"):
         st.dataframe(picks_df, use_container_width=True, hide_index=True)
 
-    locked_pts, active_proj, max_pts, root_for_raw, ytd_totals = [], [], [], [], []
+    locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
     ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
 
     for p in players:
         row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
         base_ytd = float(row.iloc[0][ytd_col]) if not row.empty and ytd_col else 0
+        
         locked = sum(parsed_picks[p].get(t, 0) for t in COMPLETED_WINNERS if t in parsed_picks[p])
         locked_pts.append(locked)
-        ytd_totals.append(int(round(base_ytd + locked)))
+        
+        ytd_locked_val = int(round(base_ytd + locked))
+        ytd_totals.append(ytd_locked_val)
         
         live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
         active_proj.append(locked + live_winning_pts)
+        
+        ytd_active_val = int(round(base_ytd + locked + live_winning_pts))
+        ytd_active_totals.append(ytd_active_val)
         
         max_possible = locked + sum(
             pts for t, pts in parsed_picks[p].items() 
@@ -258,7 +269,8 @@ else:
         'Player': players,
         'Locked': locked_pts,
         'Locked + Active': active_proj,
-        'Locked YTD Total': ytd_totals,
+        'YTD Locked': ytd_totals,
+        'YTD Locked + Active': ytd_active_totals,
         'Max': max_pts,
         'Sim Median Pts': median_scores,
         'Sim Win%': final_sim_win_pcts,
@@ -267,17 +279,22 @@ else:
 
     if not sim_results.empty:
         sim_results['Wk Rank'] = sim_results['Locked + Active'].rank(ascending=False, method='min').astype(int)
-        sim_results['YTD Rank'] = sim_results['Locked YTD Total'].rank(ascending=False, method='min').astype(int)
+        sim_results['YTD Rank'] = sim_results['YTD Locked'].rank(ascending=False, method='min').astype(int)
+        
+        # Combine Wk Rank and Player into single PLAYERS column
+        sim_results['PLAYERS'] = sim_results.apply(
+            lambda row: f"{row['Wk Rank']}{get_ordinal_suffix(row['Wk Rank'])}  {row['Player']}", axis=1
+        )
         
         sorted_results = sim_results.sort_values(by=['Locked + Active', 'Sim Median Pts'], ascending=[False, False]).reset_index(drop=True)
         
         column_order = [
-            'Wk Rank', 
-            'Player', 
+            'PLAYERS', 
             'Locked', 
             'Locked + Active', 
-            'Locked YTD Total', 
             'YTD Rank', 
+            'YTD Locked', 
+            'YTD Locked + Active', 
             'Max', 
             'Sim Median Pts', 
             'Sim Win%', 
@@ -286,12 +303,12 @@ else:
         sorted_results = sorted_results[column_order]
 
         st.dataframe(sorted_results, use_container_width=True, hide_index=True, column_config={
-            "Wk Rank": st.column_config.NumberColumn("Wk Rank", format="%d"),
-            "Player": st.column_config.TextColumn("Player"),
+            "PLAYERS": st.column_config.TextColumn("PLAYERS"),
             "Locked": st.column_config.NumberColumn("Locked", format="%d"),
             "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
-            "Locked YTD Total": st.column_config.NumberColumn("Locked YTD Total", format="%d"),
             "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
+            "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
+            "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
             "Max": st.column_config.NumberColumn("Max", format="%d"),
             "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
             "Sim Win%": st.column_config.TextColumn("Sim Win%"),
@@ -302,11 +319,11 @@ else:
 
         st.subheader("📈 Projected vs Current Performance")
         fig, ax = plt.subplots(figsize=(6, 4))
-        plot_df = sorted_results.head(15).melt(id_vars=['Player'], value_vars=['Locked', 'Sim Median Pts'])
-        sns.barplot(data=plot_df, x='value', y='Player', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9'])
+        plot_df = sorted_results.head(15).melt(id_vars=['PLAYERS'], value_vars=['Locked', 'Sim Median Pts'])
+        sns.barplot(data=plot_df, x='value', y='PLAYERS', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9'])
         ax.tick_params(axis='y', labelsize=8)
         ax.tick_params(axis='x', labelsize=8)
-        ax.set_ylabel('Player', fontsize=9)
+        ax.set_ylabel('Players', fontsize=9)
         ax.set_xlabel('Points', fontsize=9)
         ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
         for container in ax.containers: ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
