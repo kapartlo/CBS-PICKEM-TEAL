@@ -125,3 +125,74 @@ def fetch_espn_nfl_data():
                                 fav_prob = spread_to_win_prob(spread_val)
                                 home_prob = fav_prob if fav_team == home_team else 1.0 - fav_prob
                         live_probabilities[home_team] = home_prob
+                        live_probabilities[away_team] = 1.0 - home_prob
+    except Exception as e:
+        st.warning(f"ESPN API warning: {e}")
+        
+    return completed_winners, live_probabilities, pairing_map, active_games, live_leaders, decided_games
+
+st.title("🏈 CBS Sports Pick'em Pool Standings and Win Projections")
+
+picks_df = load_excel_from_gdrive()
+
+if picks_df is None:
+    st.error("Failed to load Excel data from Google Drive. Please check your secrets configuration and internet connection.")
+else:
+    game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
+    parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
+
+    for index in range(1, len(picks_df)):
+        raw_name = picks_df.loc[index, 'Players']
+        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: 
+            continue
+        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
+        name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
+        parsed_picks[name] = {}
+        for col in game_cols:
+            val = str(picks_df.loc[index, col]).strip()
+            if '(' in val and ')' in val:
+                m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
+                if m: 
+                    parsed_picks[name][m.group(1).upper()] = int(m.group(2))
+
+    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS, DECIDED_GAMES = fetch_espn_nfl_data()
+    players = list(parsed_picks.keys())
+    n_players = len(players)
+
+    st.info(f"**Week Status:** {len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
+
+    with st.expander("📊 View Raw Pick Sheet"):
+        st.dataframe(picks_df, use_container_width=True, hide_index=True)
+
+    locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
+    ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
+
+    for p in players:
+        row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
+        base_ytd = float(row.iloc[0][ytd_col]) if not row.empty and ytd_col else 0
+        
+        locked = sum(parsed_picks[p].get(t, 0) for t in COMPLETED_WINNERS if t in parsed_picks[p])
+        locked_pts.append(locked)
+        
+        ytd_locked_val = int(round(base_ytd + locked))
+        ytd_totals.append(ytd_locked_val)
+        
+        live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
+        active_proj.append(locked + live_winning_pts)
+        
+        ytd_active_val = int(round(base_ytd + locked + live_winning_pts))
+        ytd_active_totals.append(ytd_active_val)
+        
+        max_possible = locked + sum(pts for t, pts in parsed_picks[p].items() if t not in DECIDED_GAMES)
+        max_pts.append(max_possible)
+        
+        pending_items = [(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)]
+        pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
+        root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "NONE")
+
+    remaining_cards = {
+        p: tuple(sorted([(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES]))
+        for p in players
+    }
+
+    N_SIMS, pending_pairs = 1
