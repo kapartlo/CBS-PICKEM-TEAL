@@ -46,7 +46,7 @@ def load_excel_from_gdrive():
         file_buffer.seek(0)
         return pd.read_excel(file_buffer, sheet_name=0)
     except Exception as e:
-        st.error(f"Error loading Excel: {e}")
+        st.error(f"Error loading Excel from Google Drive: {e}")
         return None
 
 def spread_to_win_prob(spread):
@@ -125,15 +125,9 @@ def fetch_espn_nfl_data():
         st.warning(f"ESPN API warning: {e}")
     return completed_winners, live_probabilities, pairing_map, active_games, live_leaders, decided_games
 
-picks_df = load_excel_from_gdrive()
-
 st.title("🏈 CBS Sports Pick'em Pool Standings and Win Projections")
 
-if picks_df is not None:
-    game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
-    parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
+picks_df = load_excel_from_gdrive()
 
-    for index in range(1, len(picks_df)):
-        raw_name = picks_df.loc[index, 'Players']
-        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: continue
-        name = re.sub
+if picks_df is None:
+    st.error("Failed to load Excel data from Google Drive.
