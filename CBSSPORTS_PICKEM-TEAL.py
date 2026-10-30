@@ -142,5 +142,7 @@ else:
 
     for index in range(1, len(picks_df)):
         raw_name = picks_df.loc[index, 'Players']
-        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: continue
-        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str
+        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: 
+            continue
+        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
+        name = re.sub(r
