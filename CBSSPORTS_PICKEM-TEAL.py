@@ -176,23 +176,3 @@ else:
         
         ytd_locked_val = int(round(base_ytd + locked))
         ytd_totals.append(ytd_locked_val)
-        
-        live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
-        active_proj.append(locked + live_winning_pts)
-        
-        ytd_active_val = int(round(base_ytd + locked + live_winning_pts))
-        ytd_active_totals.append(ytd_active_val)
-        
-        max_possible = locked + sum(pts for t, pts in parsed_picks[p].items() if t not in DECIDED_GAMES)
-        max_pts.append(max_possible)
-        
-        pending_items = [(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)]
-        pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
-        root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "NONE")
-
-    remaining_cards = {
-        p: tuple(sorted([(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES]))
-        for p in players
-    }
-
-    N_SIMS, pending_pairs = 1
