@@ -166,4 +166,79 @@ if picks_df is not None:
         
         max_pts.append(locked + sum(pts for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS))
         
-        pending = sorted([(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t,
+        pending_items = [
+            (t, pts) for t, pts in parsed_picks[p].items() 
+            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
+        ]
+        pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
+        root_for.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "-")
+
+    N_SIMS, pending_pairs = 10000, [pair for pair in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0)]
+    unresolved = []
+    for t1, t2 in pending_pairs: unresolved.extend([t1, t2])
+
+    np.random.seed(42)
+    weekly_points = np.zeros((n_players, N_SIMS))
+
+    if len(pending_pairs) > 0 and n_players > 0:
+        sim_wins = np.zeros((N_SIMS, len(unresolved)), dtype=bool)
+        for t1, t2 in pending_pairs:
+            p1 = LIVE_PROBABILITIES.get(t1, 0.5)
+            p2 = LIVE_PROBABILITIES.get(t2, 0.5)
+            total_p = p1 + p2
+            p1_norm = p1 / total_p if total_p > 0 else 0.5
+            wins = np.random.rand(N_SIMS) < p1_norm
+            try:
+                sim_wins[:, unresolved.index(t1)] = wins
+                sim_wins[:, unresolved.index(t2)] = ~wins
+            except ValueError: pass
+
+        for p_idx, player in enumerate(players):
+            weekly_points[p_idx, :] = locked_pts[p_idx]
+            for t_idx, team in enumerate(unresolved):
+                weekly_points[p_idx, :] += sim_wins[:, t_idx] * parsed_picks[player].get(team, 0)
+
+        max_scores = np.max(weekly_points, axis=0)
+        win_shares = (weekly_points == max_scores) / np.sum(weekly_points == max_scores, axis=0)
+        sim_win_pcts = np.round((np.sum(win_shares, axis=1) / N_SIMS) * 100, 1)
+    else:
+        for p_idx in range(n_players): weekly_points[p_idx, :] = locked_pts[p_idx]
+        sim_win_pcts = np.zeros(n_players)
+
+    median_scores = np.round(np.median(weekly_points, axis=1)).astype(int) if n_players > 0 else []
+
+    sim_results = pd.DataFrame({
+        'Player': players,
+        'Locked': locked_pts,
+        'Locked + Active': active_proj,
+        'Locked YTD Total': ytd_totals,
+        'Max': max_pts,
+        'Sim Median Pts': median_scores,
+        'Sim Win%': sim_win_pcts,
+        'Root For': root_for,
+    }) if n_players > 0 else pd.DataFrame()
+
+    if not sim_results.empty:
+        sim_results['Wk Rank'] = sim_results['Sim Median Pts'].rank(ascending=False, method='min').astype(int)
+        sim_results['YTD Rank'] = sim_results['Locked YTD Total'].rank(ascending=False, method='min').astype(int)
+        sorted_results = sim_results.sort_values(by='Sim Median Pts', ascending=False).reset_index(drop=True)
+        
+        column_order = [
+            'Wk Rank', 
+            'Player', 
+            'Locked', 
+            'Locked + Active', 
+            'Locked YTD Total', 
+            'YTD Rank', 
+            'Max', 
+            'Sim Median Pts', 
+            'Sim Win%', 
+            'Root For'
+        ]
+        sorted_results = sorted_results[column_order]
+
+        st.dataframe(sorted_results, use_container_width=True, hide_index=True, column_config={
+            "Wk Rank": st.column_config.NumberColumn("Wk Rank", format="%d"),
+            "Player": st.column_config.TextColumn("Player"),
+            "Locked": st.column_config.NumberColumn("Locked", format="%d"),
+            "Locked + Active": st.column_config.Number
