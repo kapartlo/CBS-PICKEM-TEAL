@@ -59,8 +59,12 @@ def spread_to_win_prob(spread):
 @st.cache_data(ttl=60)
 def fetch_espn_nfl_data():
     url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-    completed_winners, live_probabilities, pairing_map, active_games = [], {}, [], 0
+    completed_winners = []
+    live_probabilities = {}
+    pairing_map = []
+    active_games = 0
     live_leaders = []
+    decided_games = set()  # Tracks any game that is final or completed
     
     try:
         res = requests.get(url, timeout=5)
@@ -85,42 +89,42 @@ def fetch_espn_nfl_data():
                     else:
                         away_team, away_score, away_win = abbr, score, t.get("winner", False)
                 
-                if is_live:
-                    if home_score > away_score:
-                        live_leaders.append(home_team)
-                    elif away_score > home_score:
-                        live_leaders.append(away_team)
-
-                odds_data = comp.get("odds", [{}])[0] if comp.get("odds") else {}
-                details = odds_data.get("details", "")
-                home_prob = 0.5
-                
-                if details and home_team and away_team:
-                    match = re.search(r'([A-Za-z]+)\s+([+-]?\d+\.?\d*)', details)
-                    if match:
-                        fav_team = match.group(1).upper()
-                        spread_val = float(match.group(2))
-                        fav_prob = spread_to_win_prob(spread_val)
-                        if fav_team == home_team:
-                            home_prob = fav_prob
-                        else:
-                            home_prob = 1.0 - fav_prob
-
                 if home_team and away_team:
                     pairing_map.append((home_team, away_team))
-                    if is_final:
-                        if home_win:
+                    
+                    # If game is final or completed
+                    if is_final or home_win or away_win:
+                        decided_games.add(home_team)
+                        decided_games.add(away_team)
+                        if home_win or (is_final and home_score > away_score):
                             completed_winners.append(home_team)
                             live_probabilities[home_team], live_probabilities[away_team] = 1.0, 0.0
-                        elif away_win:
+                        elif away_win or (is_final and away_score > home_score):
                             completed_winners.append(away_team)
                             live_probabilities[away_team], live_probabilities[home_team] = 1.0, 0.0
+                    elif is_live:
+                        if home_score > away_score:
+                            live_leaders.append(home_team)
+                        elif away_score > home_score:
+                            live_leaders.append(away_team)
+                        live_probabilities[home_team] = 0.5
+                        live_probabilities[away_team] = 0.5
                     else:
+                        odds_data = comp.get("odds", [{}])[0] if comp.get("odds") else {}
+                        details = odds_data.get("details", "")
+                        home_prob = 0.5
+                        if details:
+                            match = re.search(r'([A-Za-z]+)\s+([+-]?\d+\.?\d*)', details)
+                            if match:
+                                fav_team = match.group(1).upper()
+                                spread_val = float(match.group(2))
+                                fav_prob = spread_to_win_prob(spread_val)
+                                home_prob = fav_prob if fav_team == home_team else 1.0 - fav_prob
                         live_probabilities[home_team] = home_prob
                         live_probabilities[away_team] = 1.0 - home_prob
     except Exception as e:
         st.warning(f"ESPN API warning: {e}")
-    return completed_winners, live_probabilities, pairing_map, active_games, live_leaders
+    return completed_winners, live_probabilities, pairing_map, active_games, live_leaders, decided_games
 
 picks_df = load_excel_from_gdrive()
 
@@ -142,7 +146,7 @@ if picks_df is not None:
                 m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
                 if m: parsed_picks[name][m.group(1).upper()] = int(m.group(2))
 
-    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS = fetch_espn_nfl_data()
+    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS, DECIDED_GAMES = fetch_espn_nfl_data()
     players = list(parsed_picks.keys())
     n_players = len(players)
 
@@ -164,16 +168,21 @@ if picks_df is not None:
         live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
         active_proj.append(locked + live_winning_pts)
         
-        max_pts.append(locked + sum(pts for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS))
+        # Max points excludes any game that has already been decided (final/completed) where the player didn't win
+        max_possible = locked + sum(
+            pts for t, pts in parsed_picks[p].items() 
+            if t not in DECIDED_GAMES
+        )
+        max_pts.append(max_possible)
         
         pending_items = [
             (t, pts) for t, pts in parsed_picks[p].items() 
-            if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
+            if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
         ]
         pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
         root_for.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "-")
 
-    N_SIMS, pending_pairs = 10000, [pair for pair in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0)]
+    N_SIMS, pending_pairs = 10000, [pair for pair in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0) and pair[0] not in DECIDED_GAMES]
     unresolved = []
     for t1, t2 in pending_pairs: unresolved.extend([t1, t2])
 
@@ -222,7 +231,6 @@ if picks_df is not None:
         sim_results['Wk Rank'] = sim_results['Locked + Active'].rank(ascending=False, method='min').astype(int)
         sim_results['YTD Rank'] = sim_results['Locked YTD Total'].rank(ascending=False, method='min').astype(int)
         
-        # Sort primarily by Locked + Active descending, with Sim Median Pts as secondary tie-breaker
         sorted_results = sim_results.sort_values(by=['Locked + Active', 'Sim Median Pts'], ascending=[False, False]).reset_index(drop=True)
         
         column_order = [
