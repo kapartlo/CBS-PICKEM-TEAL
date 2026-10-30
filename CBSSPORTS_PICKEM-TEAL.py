@@ -144,4 +144,24 @@ else:
         raw_name = picks_df.loc[index, 'Players']
         if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: 
             continue
-        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name
+        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
+        name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
+        parsed_picks[name] = {}
+        for col in game_cols:
+            val = str(picks_df.loc[index, col]).strip()
+            if '(' in val and ')' in val:
+                m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
+                if m: 
+                    parsed_picks[name][m.group(1).upper()] = int(m.group(2))
+
+    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS, DECIDED_GAMES = fetch_espn_nfl_data()
+    players = list(parsed_picks.keys())
+    n_players = len(players)
+
+    st.info(f"**Week Status:** {len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
+
+    with st.expander("📊 View Raw Pick Sheet"):
+        st.dataframe(picks_df, use_container_width=True, hide_index=True)
+
+    locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
+    ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) >
