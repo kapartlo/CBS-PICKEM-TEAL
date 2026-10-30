@@ -128,7 +128,6 @@ def fetch_espn_nfl_data():
                         live_probabilities[away_team] = 1.0 - home_prob
     except Exception as e:
         st.warning(f"ESPN API warning: {e}")
-        
     return completed_winners, live_probabilities, pairing_map, active_games, live_leaders, decided_games
 
 st.title("🏈 CBS Sports Pick'em Pool Standings and Win Projections")
@@ -138,8 +137,5 @@ picks_df = load_excel_from_gdrive()
 if picks_df is None:
     st.error("Failed to load Excel data from Google Drive. Please check your secrets configuration and internet connection.")
 else:
-    possible_player_cols = [c for c in picks_df.columns if any(k in str(c).lower() for k in ['player', 'name', 'unnamed: 0'])]
-    player_col = possible_player_cols[0] if possible_player_cols else picks_df.columns[0]
-    
-    ytd_candidates = [c for c in picks_df.columns if str(c).strip().upper() == 'YTD']
-    ytd_col = ytd_candidates[0] if ytd_candidates else (picks_df.columns[2] if
+    game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
+    parsed
