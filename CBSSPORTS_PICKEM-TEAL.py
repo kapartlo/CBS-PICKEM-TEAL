@@ -303,7 +303,7 @@ else:
         sorted_results = sorted_results[column_order]
 
         st.dataframe(sorted_results, use_container_width=True, hide_index=True, column_config={
-            "PLAYERS": st.column_config.TextColumn("PLAYERS"),
+            "PLAYERS": st.column_config.TextColumn("PLAYERS", pinned=True),
             "Locked": st.column_config.NumberColumn("Locked", format="%d"),
             "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
             "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
