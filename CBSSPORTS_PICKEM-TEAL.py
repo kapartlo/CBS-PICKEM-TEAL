@@ -74,4 +74,96 @@ def fetch_espn_nfl_data():
                     active_games += 1
                 
                 competitors = comp.get("competitors", [])
-                home_team, away_team, home_score, away_score = None, None
+                home_team, away_team, home_score, away_score = None, None, 0, 0
+                home_win, away_win = False, False
+                
+                for t in competitors:
+                    abbr = t.get("team", {}).get("abbreviation", "")
+                    score = int(t.get("score", 0)) if t.get("score") else 0
+                    if t.get("homeAway") == "home":
+                        home_team, home_score, home_win = abbr, score, t.get("winner", False)
+                    else:
+                        away_team, away_score, away_win = abbr, score, t.get("winner", False)
+                
+                if is_live:
+                    if home_score > away_score:
+                        live_leaders.append(home_team)
+                    elif away_score > home_score:
+                        live_leaders.append(away_team)
+
+                odds_data = comp.get("odds", [{}])[0] if comp.get("odds") else {}
+                details = odds_data.get("details", "")
+                home_prob = 0.5
+                
+                if details and home_team and away_team:
+                    match = re.search(r'([A-Za-z]+)\s+([+-]?\d+\.?\d*)', details)
+                    if match:
+                        fav_team = match.group(1).upper()
+                        spread_val = float(match.group(2))
+                        fav_prob = spread_to_win_prob(spread_val)
+                        if fav_team == home_team:
+                            home_prob = fav_prob
+                        else:
+                            home_prob = 1.0 - fav_prob
+
+                if home_team and away_team:
+                    pairing_map.append((home_team, away_team))
+                    if is_final:
+                        if home_win:
+                            completed_winners.append(home_team)
+                            live_probabilities[home_team], live_probabilities[away_team] = 1.0, 0.0
+                        elif away_win:
+                            completed_winners.append(away_team)
+                            live_probabilities[away_team], live_probabilities[home_team] = 1.0, 0.0
+                    else:
+                        live_probabilities[home_team] = home_prob
+                        live_probabilities[away_team] = 1.0 - home_prob
+    except Exception as e:
+        st.warning(f"ESPN API warning: {e}")
+    return completed_winners, live_probabilities, pairing_map, active_games, live_leaders
+
+picks_df = load_excel_from_gdrive()
+
+st.title("🏈 CBS Sports Pick'em Pool Standings and Win Projections")
+
+if picks_df is not None:
+    game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
+    parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
+
+    for index in range(1, len(picks_df)):
+        raw_name = picks_df.loc[index, 'Players']
+        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: continue
+        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
+        name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
+        parsed_picks[name] = {}
+        for col in game_cols:
+            val = str(picks_df.loc[index, col]).strip()
+            if '(' in val and ')' in val:
+                m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
+                if m: parsed_picks[name][m.group(1).upper()] = int(m.group(2))
+
+    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS = fetch_espn_nfl_data()
+    players = list(parsed_picks.keys())
+    n_players = len(players)
+
+    st.info(f"**Week Status:** {len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Player: {n_players}**")
+
+    with st.expander("📊 View Player picks"):
+        st.dataframe(picks_df, use_container_width=True, hide_index=True)
+
+    locked_pts, active_proj, max_pts, root_for, ytd_totals = [], [], [], [], []
+    ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
+
+    for p in players:
+        row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
+        base_ytd = float(row.iloc[0][ytd_col]) if not row.empty and ytd_col else 0
+        locked = sum(parsed_picks[p].get(t, 0) for t in COMPLETED_WINNERS if t in parsed_picks[p])
+        locked_pts.append(locked)
+        ytd_totals.append(int(round(base_ytd + locked)))
+        
+        live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
+        active_proj.append(locked + live_winning_pts)
+        
+        max_pts.append(locked + sum(pts for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS))
+        
+        pending = sorted([(t, pts) for t, pts in parsed_picks[p].items() if t not in COMPLETED_WINNERS and LIVE_PROBABILITIES.get(t,
