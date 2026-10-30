@@ -281,15 +281,15 @@ else:
         sim_results['Wk Rank'] = sim_results['Locked + Active'].rank(ascending=False, method='min').astype(int)
         sim_results['YTD Rank'] = sim_results['YTD Locked'].rank(ascending=False, method='min').astype(int)
         
-        # Combine Wk Rank and Player into single PLAYERS column
-        sim_results['PLAYERS'] = sim_results.apply(
+        # Combine Wk Rank and Player into single Players column
+        sim_results['Players'] = sim_results.apply(
             lambda row: f"{row['Wk Rank']}{get_ordinal_suffix(row['Wk Rank'])}  {row['Player']}", axis=1
         )
         
         sorted_results = sim_results.sort_values(by=['Locked + Active', 'Sim Median Pts'], ascending=[False, False]).reset_index(drop=True)
         
         column_order = [
-            'PLAYERS', 
+            'Players', 
             'Locked', 
             'Locked + Active', 
             'YTD Rank', 
@@ -303,7 +303,7 @@ else:
         sorted_results = sorted_results[column_order]
 
         st.dataframe(sorted_results, use_container_width=True, hide_index=True, column_config={
-            "PLAYERS": st.column_config.TextColumn("PLAYERS", pinned=True),
+            "Players": st.column_config.TextColumn("Players", pinned=True),
             "Locked": st.column_config.NumberColumn("Locked", format="%d"),
             "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
             "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
@@ -319,8 +319,8 @@ else:
 
         st.subheader("📈 Projected vs Current Performance")
         fig, ax = plt.subplots(figsize=(6, 4))
-        plot_df = sorted_results.head(15).melt(id_vars=['PLAYERS'], value_vars=['Locked', 'Sim Median Pts'])
-        sns.barplot(data=plot_df, x='value', y='PLAYERS', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9'])
+        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts'])
+        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9'])
         ax.tick_params(axis='y', labelsize=8)
         ax.tick_params(axis='x', labelsize=8)
         ax.set_ylabel('Players', fontsize=9)
