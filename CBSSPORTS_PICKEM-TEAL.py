@@ -180,7 +180,7 @@ if picks_df is not None:
         pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
         root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "-")
 
-    # Check for identical remaining cards blocking lower-scoring participants
+    # Check for empty cards or identical remaining cards blocking lower-scoring participants
     remaining_cards = {
         p: tuple(sorted([
             (t, pts) for t, pts in parsed_picks[p].items()
@@ -193,11 +193,18 @@ if picks_df is not None:
     for idx, p in enumerate(players):
         p_score = active_proj[idx]
         is_blocked = False
-        for other_idx, other_p in enumerate(players):
-            if p != other_p:
-                if active_proj[other_idx] > p_score and remaining_cards[p] == remaining_cards[other_p]:
-                    is_blocked = True
-                    break
+        
+        # If the player has no pending picks left (e.g. unentered or all games completed)
+        if len(remaining_cards[p]) == 0:
+            is_blocked = True
+        else:
+            # Check if another player with a HIGHER score holds an IDENTICAL remaining card
+            for other_idx, other_p in enumerate(players):
+                if p != other_p:
+                    if active_proj[other_idx] > p_score and remaining_cards[p] == remaining_cards[other_p]:
+                        is_blocked = True
+                        break
+                        
         final_root_for.append("NONE" if is_blocked else root_for_raw[idx])
 
     N_SIMS, pending_pairs = 10000, [pair for pair in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0) and pair[0] not in DECIDED_GAMES]
