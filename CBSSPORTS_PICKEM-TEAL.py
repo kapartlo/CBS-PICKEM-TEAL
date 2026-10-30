@@ -64,7 +64,7 @@ def fetch_espn_nfl_data():
     pairing_map = []
     active_games = 0
     live_leaders = []
-    decided_games = set()  # Tracks any game that is final or completed
+    decided_games = set()
     
     try:
         res = requests.get(url, timeout=5)
@@ -92,7 +92,6 @@ def fetch_espn_nfl_data():
                 if home_team and away_team:
                     pairing_map.append((home_team, away_team))
                     
-                    # If game is final or completed
                     if is_final or home_win or away_win:
                         decided_games.add(home_team)
                         decided_games.add(away_team)
@@ -155,7 +154,7 @@ if picks_df is not None:
     with st.expander("📊 View Player picks"):
         st.dataframe(picks_df, use_container_width=True, hide_index=True)
 
-    locked_pts, active_proj, max_pts, root_for, ytd_totals = [], [], [], [], []
+    locked_pts, active_proj, max_pts, root_for_raw, ytd_totals = [], [], [], [], []
     ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
 
     for p in players:
@@ -168,7 +167,6 @@ if picks_df is not None:
         live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
         active_proj.append(locked + live_winning_pts)
         
-        # Max points excludes any game that has already been decided (final/completed) where the player didn't win
         max_possible = locked + sum(
             pts for t, pts in parsed_picks[p].items() 
             if t not in DECIDED_GAMES
@@ -180,7 +178,27 @@ if picks_df is not None:
             if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
         ]
         pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
-        root_for.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "-")
+        root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "-")
+
+    # Check for identical remaining cards blocking lower-scoring participants
+    remaining_cards = {
+        p: tuple(sorted([
+            (t, pts) for t, pts in parsed_picks[p].items()
+            if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES
+        ]))
+        for p in players
+    }
+
+    final_root_for = []
+    for idx, p in enumerate(players):
+        p_score = active_proj[idx]
+        is_blocked = False
+        for other_idx, other_p in enumerate(players):
+            if p != other_p:
+                if active_proj[other_idx] > p_score and remaining_cards[p] == remaining_cards[other_p]:
+                    is_blocked = True
+                    break
+        final_root_for.append("NONE" if is_blocked else root_for_raw[idx])
 
     N_SIMS, pending_pairs = 10000, [pair for pair in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0) and pair[0] not in DECIDED_GAMES]
     unresolved = []
@@ -224,7 +242,7 @@ if picks_df is not None:
         'Max': max_pts,
         'Sim Median Pts': median_scores,
         'Sim Win%': sim_win_pcts,
-        'Root For': root_for,
+        'Root For': final_root_for,
     }) if n_players > 0 else pd.DataFrame()
 
     if not sim_results.empty:
