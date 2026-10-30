@@ -142,33 +142,4 @@ else:
     player_col = possible_player_cols[0] if possible_player_cols else picks_df.columns[0]
     
     ytd_candidates = [c for c in picks_df.columns if str(c).strip().upper() == 'YTD']
-    ytd_col = ytd_candidates[0] if ytd_candidates else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
-
-    game_cols = [col for col in picks_df.columns if col not in [player_col, ytd_col] and 'TIE' not in str(col).upper() and 'TOTAL' not in str(col).upper()]
-    parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
-
-    for index in range(len(picks_df)):
-        raw_name = picks_df.loc[index, player_col]
-        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN', 'Players', 'Player']: 
-            continue
-        name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
-        name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
-        if not name or name.lower() == 'players':
-            continue
-            
-        parsed_picks[name] = {}
-        for col in game_cols:
-            val = str(picks_df.loc[index, col]).strip()
-            if '(' in val and ')' in val:
-                m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
-                if m: 
-                    parsed_picks[name][m.group(1).upper()] = int(m.group(2))
-
-    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS, DECIDED_GAMES = fetch_espn_nfl_data()
-    players = list(parsed_picks.keys())
-    n_players = len(players)
-
-    st.info(f"**Week Status:** {len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
-
-    with st.expander("📊 View Raw Pick Sheet"):
-        st.dataframe(picks_df, use_container_width=True, hide_index
+    ytd_col = ytd_candidates[0] if ytd_candidates else (picks_df.columns[2] if
