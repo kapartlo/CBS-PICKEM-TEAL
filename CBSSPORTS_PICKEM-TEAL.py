@@ -145,12 +145,16 @@ else:
         if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: continue
         name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
         name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
-        parsed_picks[name] = {}
+        
+        player_picks = {}
         for col in game_cols:
             val = str(picks_df.loc[index, col]).strip()
             if '(' in val and ')' in val:
                 m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
-                if m: parsed_picks[name][m.group(1).upper()] = int(m.group(2))
+                if m: player_picks[m.group(1).upper()] = int(m.group(2))
+        
+        if len(player_picks) > 0:
+            parsed_picks[name] = player_picks
 
     COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS, DECIDED_GAMES = fetch_espn_nfl_data()
     players = list(parsed_picks.keys())
@@ -158,8 +162,16 @@ else:
 
     st.info(f"**Week Status:** {len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
 
-    with st.expander("📊 View Raw Pick Sheet"):
-        st.dataframe(picks_df, use_container_width=True, hide_index=True)
+    raw_player_col = picks_df.columns[0] if len(picks_df.columns) > 0 else 'Players'
+    with st.expander("📊 View this week's player picks."):
+        st.dataframe(
+            picks_df, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                raw_player_col: st.column_config.TextColumn(raw_player_col, pinned=True)
+            }
+        )
 
     locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
     ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
@@ -260,8 +272,8 @@ else:
             final_sim_win_pcts.append("ZERO")
         else:
             final_root_for.append(root_for_raw[idx])
-            if raw_pct < 0.05:
-                final_sim_win_pcts.append("Under .05%")
+            if raw_pct < 0.1:
+                final_sim_win_pcts.append("Under 0.1%")
             else:
                 final_sim_win_pcts.append(f"{raw_pct:.1f}%")
 
@@ -301,31 +313,42 @@ else:
         ]
         sorted_results = sorted_results[column_order]
 
-        st.dataframe(sorted_results, use_container_width=True, hide_index=True, column_config={
-            "Players": st.column_config.TextColumn("Players", pinned=True),
-            "Locked": st.column_config.NumberColumn("Locked", format="%d"),
-            "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
-            "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
-            "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
-            "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
-            "Max": st.column_config.NumberColumn("Max", format="%d"),
-            "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
-            "Sim Win%": st.column_config.TextColumn("Sim Win%"),
-            "Root For": st.column_config.TextColumn("Root For"),
-        })
+        st.dataframe(
+            sorted_results, 
+            use_container_width=True, 
+            hide_index=True, 
+            column_config={
+                "Players": st.column_config.TextColumn("Players", pinned=True),
+                "Locked": st.column_config.NumberColumn("Locked", format="%d"),
+                "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
+                "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
+                "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
+                "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
+                "Max": st.column_config.NumberColumn("Max", format="%d"),
+                "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
+                "Sim Win%": st.column_config.TextColumn("Sim Win%"),
+                "Root For": st.column_config.TextColumn("Root For"),
+            }
+        )
 
         st.markdown("[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
 
         st.subheader("📈 Projected vs Current Performance")
         fig, ax = plt.subplots(figsize=(6, 4))
-        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Max', 'Sim Median Pts'])
-        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#f39c12', '#00cec9'])
+        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts', 'Max'])
+        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9', '#f39c12'])
         ax.tick_params(axis='y', labelsize=8)
         ax.tick_params(axis='x', labelsize=8)
         ax.set_ylabel('Players', fontsize=9)
         ax.set_xlabel('Points', fontsize=9)
         ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
-        for container in ax.containers: ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
+        
+        for label in ax.get_yticklabels():
+            label.set_horizontalalignment('left')
+        ax.yaxis.set_tick_params(pad=-95)
+
+        for container in ax.containers: 
+            ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
         plt.tight_layout()
         st.pyplot(fig)
     else:
