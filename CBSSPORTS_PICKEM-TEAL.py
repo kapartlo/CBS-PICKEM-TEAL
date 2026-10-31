@@ -333,7 +333,7 @@ else:
 
         st.markdown("[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
 
-        st.subheader("📈 Projected vs Current Performance")
+        st.subheader("📈 Locked, Simulated and Maximum Points")
         fig, ax = plt.subplots(figsize=(6, 4))
         plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts', 'Max'])
         sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9', '#f39c12'])
