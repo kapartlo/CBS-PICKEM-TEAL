@@ -188,9 +188,9 @@ def normalize_team_abbreviation(abbreviation):
     abbreviation = abbreviation.upper()
     return TEAM_ABBREVIATION_ALIASES.get(abbreviation, abbreviation)
 
-def simulate_weekly_results(players, parsed_picks, locked_points, pairing_map, decided_teams, game_probabilities, n_sims=10000):
+def simulate_weekly_results(players, parsed_picks, locked_points, pairing_map, decided_teams, game_probabilities, n_sims=10000, rng_seed=42):
     weekly_points = np.zeros((len(players), n_sims))
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(rng_seed)
 
     for pair in pairing_map:
         if pair[0] in decided_teams:
@@ -363,6 +363,12 @@ def fetch_espn_nfl_data():
     )
 
 st.title("Teal CBS Sports Pick'em")
+st.session_state.setdefault("simulation_seed", 42)
+if st.button("REFRESH"):
+    load_excel_from_gdrive.clear()
+    fetch_espn_nfl_data.clear()
+    st.session_state["simulation_seed"] += 1
+    st.rerun()
 
 picks_df = load_excel_from_gdrive()
 
@@ -372,6 +378,7 @@ else:
     game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
     parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
     pick_parse_errors = []
+    column_teams = {col: set() for col in game_cols}
 
     for index in range(1, len(picks_df)):
         raw_name = picks_df.loc[index, 'Players']
@@ -388,6 +395,7 @@ else:
                 if team in player_picks:
                     pick_parse_errors.append(f"{name}: picked {team} more than once.")
                 player_picks[team] = int(m.group(2))
+                column_teams[col].add(team)
             elif val.upper() not in {"", "-", "NAN", "NONE"}:
                 pick_parse_errors.append(f"{name}: could not parse pick {val!r} in {col!r}.")
 
@@ -428,48 +436,129 @@ else:
             + ", ".join(f"{home} vs {away}" for home, away in missing_forecasts)
             + "."
         )
+    team_matchups = {team: pair for pair in DEFAULT_PAIRING_MAP for team in pair}
+    column_matchups = {}
+    for col, teams in column_teams.items():
+        matchups = {team_matchups[team] for team in teams if team in team_matchups}
+        if len(matchups) > 1:
+            DATA_ERRORS.append(f"{col}: picks contain teams from multiple ESPN matchups.")
+        column_matchups[col] = next(iter(matchups)) if len(matchups) == 1 else None
     if DATA_ERRORS:
         st.error("Predictions are paused because the matchup or probability data could not be verified.")
         for error in DATA_ERRORS:
             st.write(f"- {error}")
         st.stop()
 
-    st.info(f"**Week Status:** {len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
-    st.caption(
-        "Sim First-Place Share is each player's share of first place across 10,000 weekly simulations "
-        "(ties split the share). Simulations use ESPN live win probabilities, no-vig market moneylines, "
-        "or ESPN's matchup predictor when market odds are unavailable. Games are modeled independently; "
-        "this is not a season-long pool-winning probability."
-    )
-
-    forecasts = pd.DataFrame(
-        [
-            {
-                "Matchup": f"{home} vs {away}",
-                "Home win": GAME_PROBABILITIES[(home, away)][0],
-                "Away win": GAME_PROBABILITIES[(home, away)][1],
-                "Tie": GAME_PROBABILITIES[(home, away)][2],
-                "Probability source": PROBABILITY_SOURCES[(home, away)],
-            }
-            for home, away in DEFAULT_PAIRING_MAP
-        ]
-    )
-    if not forecasts.empty:
-        for column in ("Home win", "Away win", "Tie"):
-            forecasts[column] = (forecasts[column] * 100).round(1).map(lambda value: f"{value:.1f}%")
-        with st.expander("🏈 Game-by-game probabilities and sources"):
-            st.dataframe(forecasts, use_container_width=True, hide_index=True)
+    st.info(f"{len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
 
     raw_player_col = picks_df.columns[0] if len(picks_df.columns) > 0 else 'Players'
-    with st.expander("📊 View this week's player picks."):
-        st.dataframe(
-            picks_df, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                raw_player_col: st.column_config.TextColumn(raw_player_col, pinned=True)
-            }
+    blank_row = {
+        col: np.nan if pd.api.types.is_numeric_dtype(picks_df[col]) else ""
+        for col in picks_df.columns
+    }
+    matchup_row = blank_row.copy()
+    favorite_row = blank_row.copy()
+    matchup_row[raw_player_col] = "Matchup"
+    favorite_row[raw_player_col] = "Sim Favorite (win chance)"
+    for col, pair in column_matchups.items():
+        if pair is not None:
+            home, away = pair
+            matchup_row[col] = f"{home} vs {away}"
+            home_probability, away_probability, _ = GAME_PROBABILITIES[pair]
+            favorite = home if home_probability >= away_probability else away
+            favorite_probability = max(home_probability, away_probability)
+            favorite_row[col] = f"{favorite} ({favorite_probability:.1%})"
+        else:
+            matchup_row[col] = "No picks" if not column_teams[col] else "Unmatched"
+
+    display_picks_df = pd.concat(
+        [
+            pd.DataFrame([matchup_row, favorite_row]),
+            picks_df.iloc[1:],
+        ],
+        ignore_index=True,
+    )
+    numeric_columns = [
+        column
+        for column in display_picks_df.columns
+        if pd.api.types.is_numeric_dtype(display_picks_df[column])
+    ]
+    styled_picks_df = (
+        display_picks_df.style.hide(axis="index")
+        .format(
+            {column: "{:,.0f}" for column in numeric_columns},
+            escape="html",
         )
+        .set_table_styles(
+            [
+                {
+                    "selector": "thead th",
+                    "props": [
+                        ("font-weight", "bold"),
+                        ("background-color", "#2F6F9F"),
+                        ("color", "white"),
+                    ],
+                },
+                {
+                    "selector": "tbody tr:nth-child(-n+2) td",
+                    "props": [
+                        ("font-weight", "bold"),
+                        ("background-color", "#2F6F9F"),
+                        ("color", "white"),
+                    ],
+                },
+            ]
+        )
+    )
+    matrix_html = styled_picks_df.to_html()
+    matrix_css = """
+        <style>
+            html, body { margin: 0; padding: 0; }
+            .picks-table-scroll { width: 100%; height: 560px; overflow: auto; }
+            .picks-table-scroll table {
+                width: max-content;
+                min-width: 100%;
+                border-collapse: separate;
+                border-spacing: 0;
+            }
+            .picks-table-scroll thead th {
+                position: sticky;
+                top: 0;
+                z-index: 5;
+                white-space: nowrap;
+            }
+            .picks-table-scroll tbody tr:nth-child(1) td {
+                position: sticky;
+                top: 34px;
+                z-index: 4;
+            }
+            .picks-table-scroll tbody tr:nth-child(2) td {
+                position: sticky;
+                top: 68px;
+                z-index: 4;
+            }
+            .picks-table-scroll th:first-child,
+            .picks-table-scroll td:first-child {
+                position: sticky;
+                left: 0;
+            }
+            .picks-table-scroll thead th:first-child { z-index: 7; }
+            .picks-table-scroll tbody td:first-child {
+                z-index: 6;
+                background: white;
+            }
+            .picks-table-scroll tbody tr:nth-child(-n+2) td:first-child {
+                z-index: 8;
+                background: #2F6F9F;
+            }
+        </style>
+    """
+    with st.expander("📊 View this week's player picks."):
+        st.html(
+            f'{matrix_css}<div class="picks-table-scroll">{matrix_html}</div>',
+            width="stretch",
+        )
+    st.markdown("[View CBSSPORTS PICK'EM Website](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
 
     locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
     ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
@@ -512,6 +601,7 @@ else:
         DECIDED_GAMES,
         GAME_PROBABILITIES,
         N_SIMS,
+        st.session_state["simulation_seed"],
     )
 
     median_scores = np.round(np.median(weekly_points, axis=1)).astype(int) if n_players > 0 else []
@@ -580,26 +670,27 @@ else:
                 "Root For": st.column_config.TextColumn("Root For"),
             }
         )
-
-        st.markdown("[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
+        st.caption(
+            "Sim First-Place Share is each player's share of first place across 10,000 weekly simulations "
+            "(ties split the share). Simulations use ESPN live win probabilities."
+        )
 
         st.subheader("📈 Locked, Simulated and Maximum Points")
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(8, 5))
         plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts', 'Max'])
         sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9', '#f39c12'])
-        ax.tick_params(axis='y', labelsize=8)
+        ax.tick_params(axis='y', labelsize=8, pad=2)
         ax.tick_params(axis='x', labelsize=8)
         ax.set_ylabel('Players', fontsize=9)
         ax.set_xlabel('Points', fontsize=9)
-        ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
+        ax.legend(fontsize=8, title_fontsize=8, loc='upper center', bbox_to_anchor=(0.5, 1.16), ncol=3)
         
         for label in ax.get_yticklabels():
-            label.set_horizontalalignment('left')
-        ax.yaxis.set_tick_params(pad=-95)
+            label.set_horizontalalignment('right')
 
         for container in ax.containers: 
             ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
-        plt.tight_layout()
+        fig.subplots_adjust(left=0.30, right=0.98, bottom=0.14, top=0.78)
         st.pyplot(fig)
     else:
         st.warning("No player picks could be parsed from the uploaded spreadsheet.")
