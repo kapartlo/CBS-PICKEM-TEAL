@@ -261,7 +261,7 @@ def fetch_espn_nfl_data():
             side = competitor.get("homeAway")
             team = competitor.get("team", {})
             team_id = str(team.get("id", ""))
-            abbreviation = str(team.get("abbreviation", "")).upper()
+            abbreviation = normalize_team_abbreviation(str(team.get("abbreviation", "")))
             if side not in {"home", "away"} or not team_id or not abbreviation or side in sides:
                 errors.append(f"{event_name}: invalid or ambiguous ESPN team matchup.")
                 sides = {}
