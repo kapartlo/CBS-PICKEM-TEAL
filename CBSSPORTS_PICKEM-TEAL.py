@@ -684,9 +684,9 @@ else:
             }
             .picks-table thead th,
             .picks-table tbody tr.pinned-row td,
-            #weekly-picks-table th:nth-child(-n+3),
-            #weekly-picks-table td:nth-child(-n+3) {
-                color: #202124;
+            .picks-table th:first-child,
+            .picks-table td:first-child {
+                color: #202124 !important;
             }
             .picks-table th:nth-child(1),
             .picks-table td:nth-child(1) {
@@ -695,22 +695,8 @@ else:
                 z-index: 5;
                 background: white;
             }
-            #weekly-picks-table th:nth-child(2),
-            #weekly-picks-table td:nth-child(2) {
-                position: sticky;
-                left: var(--players-column-width, 0px);
-                z-index: 5;
-                background: white;
-            }
-            #weekly-picks-table th:nth-child(3),
-            #weekly-picks-table td:nth-child(3) {
-                position: sticky;
-                left: calc(var(--players-column-width, 0px) + var(--locked-column-width, 0px));
-                z-index: 5;
-                background: white;
-            }
-            #weekly-picks-table thead th:nth-child(-n+3) { z-index: 30; }
-            #weekly-picks-table tbody tr.pinned-row td:nth-child(-n+3) { z-index: 15; }
+            #weekly-picks-table thead th:first-child { z-index: 30; }
+            #weekly-picks-table tbody tr.pinned-row td:first-child { z-index: 15; }
             #weekly-picks-table td.column-heading {
                 text-align: center;
                 font-weight: bold;
@@ -739,19 +725,6 @@ else:
                 const directions = new Map([[1, "desc"], [2, "desc"]]);
                 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
                 const headers = Array.from(table.tHead.rows[0].cells);
-                const updatePinnedColumnWidths = () => {
-                    if (headers.length < 3) return;
-                    table.style.setProperty(
-                        "--players-column-width",
-                        `${headers[0].getBoundingClientRect().width}px`
-                    );
-                    table.style.setProperty(
-                        "--locked-column-width",
-                        `${headers[1].getBoundingClientRect().width}px`
-                    );
-                };
-                updatePinnedColumnWidths();
-                new ResizeObserver(updatePinnedColumnWidths).observe(table);
                 const sortIndicators = [
                     ...headers.slice(3),
                     body.rows[1].cells[0],
