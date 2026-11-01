@@ -663,7 +663,7 @@ else:
                     score = CURRENT_SCORES.get(pair)
                     if (
                         picked_team in pair
-                        and pair in DECIDED_GAMES
+                        and set(pair).issubset(DECIDED_GAMES)
                         and picked_team in COMPLETED_WINNERS
                     ):
                         display_value += (
@@ -673,7 +673,7 @@ else:
                         )
                     elif (
                         picked_team in pair
-                        and pair in DECIDED_GAMES
+                        and set(pair).issubset(DECIDED_GAMES)
                         and score is not None
                         and score[0] != score[1]
                     ):
@@ -991,8 +991,8 @@ else:
         if max_pts[idx] < max_locked_opponent:
             final_sim_win_pcts.append("None")
             continue
-        if 0 <= raw_pct < 0.1:
-            final_sim_win_pcts.append("Under 0.1%")
+        if 0 <= raw_pct <= 0.1:
+            final_sim_win_pcts.append("0.1% or less")
         else:
             final_sim_win_pcts.append(f"{raw_pct:5.1f}%".replace(" ", "\u2007"))
 
@@ -1043,8 +1043,16 @@ else:
         results_rows = []
         for result_row in sorted_results.itertuples(index=False, name=None):
             cells = []
-            for value in result_row:
+            for column_index, value in enumerate(result_row):
                 display_value, sort_value = format_pick_cell(value)
+                if sorted_results.columns[column_index] == "Sim First-Place Share":
+                    if value == "None":
+                        sort_value = ""
+                    elif value == "0.1% or less":
+                        sort_value = "0.1"
+                    else:
+                        sort_value = str(value).replace("%", "").replace("\u2007", "").strip()
+                    sort_value = html_escape(sort_value, quote=True)
                 cells.append(f'<td data-sort="{sort_value}">{display_value}</td>')
             results_rows.append(f"<tr>{''.join(cells)}</tr>")
         results_colgroup = "".join(
