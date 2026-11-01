@@ -1,8 +1,26 @@
+"""
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+TEST...........................................
+"""
+
+
 import base64
 import io
 import json
+import math
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -49,88 +67,308 @@ def load_excel_from_gdrive():
         st.error(f"Error loading Excel from Google Drive: {e}")
         return None
 
-def spread_to_win_prob(spread):
-    if spread is None:
-        return 0.5
-    import scipy.stats as stats
-    prob = stats.norm.cdf(-spread / 13.5)
-    return float(np.clip(prob, 0.05, 0.95))
+def american_odds_to_probability(odds):
+    try:
+        value = float(str(odds).replace("\u2212", "-"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value == 0:
+        return None
+    if value > 0:
+        return 100 / (value + 100)
+    return -value / (-value + 100)
+
+def get_market_probabilities(odds_items, home_id, away_id):
+    for odds in odds_items:
+        home_odds = odds.get("homeTeamOdds", {})
+        away_odds = odds.get("awayTeamOdds", {})
+        odds_home_id = str(home_odds.get("team", {}).get("id", ""))
+        odds_away_id = str(away_odds.get("team", {}).get("id", ""))
+        if odds_home_id != home_id or odds_away_id != away_id:
+            continue
+
+        home_implied = american_odds_to_probability(
+            home_odds.get("moneyLine", home_odds.get("moneyline"))
+        )
+        away_implied = american_odds_to_probability(
+            away_odds.get("moneyLine", away_odds.get("moneyline"))
+        )
+        if home_implied is None or away_implied is None:
+            continue
+
+        total = home_implied + away_implied
+        if total > 0:
+            provider = odds.get("provider", {}).get("name", "market")
+            return home_implied / total, away_implied / total, 0.0, f"No-vig moneyline ({provider})"
+    return None
+
+def fetch_summary_probabilities(event_id, home_id, away_id, is_live):
+    url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary"
+    response = requests.get(url, params={"event": event_id}, timeout=8)
+    response.raise_for_status()
+    summary = response.json()
+
+    summary_competitions = summary.get("header", {}).get("competitions", [])
+    if is_live and not summary_competitions:
+        raise ValueError(f"ESPN summary has no matchup IDs for live event {event_id}")
+    if summary_competitions:
+        summary_sides = {
+            competitor.get("homeAway"): str(competitor.get("id", ""))
+            for competitor in summary_competitions[0].get("competitors", [])
+        }
+        if summary_sides.get("home") != home_id or summary_sides.get("away") != away_id:
+            raise ValueError(f"ESPN summary teams do not match scoreboard teams for event {event_id}")
+
+    if is_live:
+        probability_points = summary.get("winprobability", [])
+        if isinstance(probability_points, list):
+            for point in reversed(probability_points):
+                try:
+                    home_probability = float(point["homeWinPercentage"])
+                    tie_probability = float(point.get("tiePercentage", 0.0))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if (
+                    math.isfinite(home_probability)
+                    and math.isfinite(tie_probability)
+                    and 0 <= home_probability <= 1
+                    and 0 <= tie_probability <= 1
+                    and home_probability + tie_probability <= 1
+                ):
+                    away_probability = 1 - home_probability - tie_probability
+                    return (
+                        home_probability,
+                        away_probability,
+                        tie_probability,
+                        "ESPN live win probability",
+                    )
+        raise ValueError(f"ESPN has no valid live win-probability update for event {event_id}")
+
+    predictor = summary.get("predictor", {})
+    if (
+        str(predictor.get("homeTeam", {}).get("id", "")) != home_id
+        or str(predictor.get("awayTeam", {}).get("id", "")) != away_id
+    ):
+        raise ValueError(f"ESPN predictor teams do not match scoreboard teams for event {event_id}")
+    try:
+        home_projection = float(predictor["homeTeam"]["gameProjection"])
+        away_projection = float(predictor["awayTeam"]["gameProjection"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"ESPN has no valid pregame projection for event {event_id}")
+    total = home_projection + away_projection
+    if (
+        not math.isfinite(home_projection)
+        or not math.isfinite(away_projection)
+        or home_projection < 0
+        or away_projection < 0
+        or total <= 0
+    ):
+        raise ValueError(f"ESPN returned invalid pregame projections for event {event_id}")
+    return (
+        home_projection / total,
+        away_projection / total,
+        0.0,
+        "ESPN matchup predictor",
+    )
 
 def get_ordinal_suffix(n):
     if 11 <= n <= 13:
         return 'th'
     return {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
 
+TEAM_ABBREVIATION_ALIASES = {
+    "JAC": "JAX",
+    "WSH": "WAS",
+    "OAK": "LV",
+    "SD": "LAC",
+    "STL": "LAR",
+}
+
+def normalize_team_abbreviation(abbreviation):
+    abbreviation = abbreviation.upper()
+    return TEAM_ABBREVIATION_ALIASES.get(abbreviation, abbreviation)
+
+def simulate_weekly_results(players, parsed_picks, locked_points, pairing_map, decided_teams, game_probabilities, n_sims=10000, rng_seed=42):
+    weekly_points = np.zeros((len(players), n_sims))
+    rng = np.random.default_rng(rng_seed)
+
+    for pair in pairing_map:
+        if pair[0] in decided_teams:
+            continue
+        home_probability, _, tie_probability = game_probabilities[pair]
+        draws = rng.random(n_sims)
+        home_wins = draws < home_probability
+        away_wins = draws >= home_probability + tie_probability
+        for player_index, player in enumerate(players):
+            weekly_points[player_index] += home_wins * parsed_picks[player].get(pair[0], 0)
+            weekly_points[player_index] += away_wins * parsed_picks[player].get(pair[1], 0)
+
+    if not players:
+        return weekly_points, np.zeros(0)
+
+    weekly_points += np.asarray(locked_points)[:, np.newaxis]
+    top_scores = np.max(weekly_points, axis=0)
+    win_shares = (weekly_points == top_scores) / np.sum(weekly_points == top_scores, axis=0)
+    first_place_shares = np.sum(win_shares, axis=1) / n_sims * 100
+    return weekly_points, first_place_shares
+
 @st.cache_data(ttl=60)
 def fetch_espn_nfl_data():
     url = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
     completed_winners = []
-    live_probabilities = {}
+    team_probabilities = {}
     pairing_map = []
+    game_probabilities = {}
+    probability_sources = {}
     active_games = 0
     live_leaders = []
     decided_games = set()
-    
+    errors = []
+
     try:
         res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            for event in res.json().get("events", []):
-                comp = event.get("competitions", [{}])[0]
-                status = comp.get("status", {}).get("type", {}).get("name", "")
-                is_final = (status == "STATUS_FINAL")
-                is_live = (status in ["STATUS_IN_PROGRESS", "STATUS_HALFTIME"])
-                if is_live: 
-                    active_games += 1
-                
-                competitors = comp.get("competitors", [])
-                home_team, away_team, home_score, away_score = None, None, 0, 0
-                home_win, away_win = False, False
-                
-                for t in competitors:
-                    abbr = t.get("team", {}).get("abbreviation", "")
-                    score = int(t.get("score", 0)) if t.get("score") else 0
-                    if t.get("homeAway") == "home":
-                        home_team, home_score, home_win = abbr, score, t.get("winner", False)
-                    else:
-                        away_team, away_score, away_win = abbr, score, t.get("winner", False)
-                
-                if home_team and away_team:
-                    pairing_map.append((home_team, away_team))
-                    
-                    if is_final or home_win or away_win:
-                        decided_games.add(home_team)
-                        decided_games.add(away_team)
-                        if home_win or (is_final and home_score > away_score):
-                            completed_winners.append(home_team)
-                            live_probabilities[home_team], live_probabilities[away_team] = 1.0, 0.0
-                        elif away_win or (is_final and away_score > home_score):
-                            completed_winners.append(away_team)
-                            live_probabilities[away_team], live_probabilities[home_team] = 1.0, 0.0
-                    elif is_live:
-                        if home_score > away_score:
-                            live_leaders.append(home_team)
-                        elif away_score > home_score:
-                            live_leaders.append(away_team)
-                        live_probabilities[home_team] = 0.5
-                        live_probabilities[away_team] = 0.5
-                    else:
-                        odds_data = comp.get("odds", [{}])[0] if comp.get("odds") else {}
-                        details = odds_data.get("details", "")
-                        home_prob = 0.5
-                        if details:
-                            match = re.search(r'([A-Za-z]+)\s+([+-]?\d+\.?\d*)', details)
-                            if match:
-                                fav_team = match.group(1).upper()
-                                spread_val = float(match.group(2))
-                                fav_prob = spread_to_win_prob(spread_val)
-                                home_prob = fav_prob if fav_team == home_team else 1.0 - fav_prob
-                        live_probabilities[home_team] = home_prob
-                        live_probabilities[away_team] = 1.0 - home_prob
-    except Exception as e:
-        st.warning(f"ESPN API warning: {e}")
-    return completed_winners, live_probabilities, pairing_map, active_games, live_leaders, decided_games
+        res.raise_for_status()
+        events = res.json().get("events", [])
+    except (
+        requests.RequestException,
+        AttributeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as e:
+        return completed_winners, team_probabilities, pairing_map, active_games, live_leaders, decided_games, game_probabilities, probability_sources, [f"Could not load ESPN scoreboard: {e}"]
 
-st.title("🏈 CBS Sports Pick'em Pool Standings and Win Projections")
+    forecast_tasks = []
+    seen_team_ids = set()
+    seen_team_abbreviations = set()
+    for event in events:
+        event_name = event.get("name", event.get("id", "Unknown matchup"))
+        event_id = str(event.get("id", ""))
+        competitions = event.get("competitions", [])
+        if not event_id or not competitions:
+            errors.append(f"{event_name}: missing event ID or competition data.")
+            continue
+
+        comp = competitions[0]
+        status_data = comp.get("status", {}).get("type", {})
+        status = status_data.get("name", "")
+        game_state = status_data.get("state", "")
+        is_final = status.startswith("STATUS_FINAL") or status_data.get("completed", False) or game_state == "post"
+        is_live = game_state == "in" or status in {"STATUS_IN_PROGRESS", "STATUS_HALFTIME"}
+
+        sides = {}
+        for competitor in comp.get("competitors", []):
+            side = competitor.get("homeAway")
+            team = competitor.get("team", {})
+            team_id = str(team.get("id", ""))
+            abbreviation = normalize_team_abbreviation(str(team.get("abbreviation", "")))
+            if side not in {"home", "away"} or not team_id or not abbreviation or side in sides:
+                errors.append(f"{event_name}: invalid or ambiguous ESPN team matchup.")
+                sides = {}
+                break
+            sides[side] = {
+                "id": team_id,
+                "abbr": abbreviation,
+                "score": int(competitor.get("score") or 0),
+                "winner": competitor.get("winner", False),
+            }
+        if set(sides) != {"home", "away"}:
+            if not any(event_name in error for error in errors):
+                errors.append(f"{event_name}: ESPN did not provide exactly one home and one away team.")
+            continue
+
+        home, away = sides["home"], sides["away"]
+        if home["id"] == away["id"] or home["abbr"] == away["abbr"]:
+            errors.append(f"{event_name}: ESPN returned duplicate team IDs or abbreviations.")
+            continue
+        if (
+            home["id"] in seen_team_ids
+            or away["id"] in seen_team_ids
+            or home["abbr"] in seen_team_abbreviations
+            or away["abbr"] in seen_team_abbreviations
+        ):
+            errors.append(f"{event_name}: a team ID or abbreviation appears in more than one matchup.")
+            continue
+        seen_team_ids.update((home["id"], away["id"]))
+        seen_team_abbreviations.update((home["abbr"], away["abbr"]))
+
+        pair = (home["abbr"], away["abbr"])
+        pairing_map.append(pair)
+        team_probabilities[home["abbr"]] = None
+        team_probabilities[away["abbr"]] = None
+        if is_live:
+            active_games += 1
+            if home["score"] > away["score"]:
+                live_leaders.append(home["abbr"])
+            elif away["score"] > home["score"]:
+                live_leaders.append(away["abbr"])
+
+        if is_final:
+            decided_games.update(pair)
+            if home["winner"]:
+                completed_winners.append(home["abbr"])
+                game_probabilities[pair] = (1.0, 0.0, 0.0)
+            elif away["winner"]:
+                completed_winners.append(away["abbr"])
+                game_probabilities[pair] = (0.0, 1.0, 0.0)
+            elif home["score"] == away["score"]:
+                game_probabilities[pair] = (0.0, 0.0, 1.0)
+            elif home["score"] > away["score"]:
+                completed_winners.append(home["abbr"])
+                game_probabilities[pair] = (1.0, 0.0, 0.0)
+            else:
+                completed_winners.append(away["abbr"])
+                game_probabilities[pair] = (0.0, 1.0, 0.0)
+            probability_sources[pair] = "Final result"
+            continue
+
+        market_probabilities = None if is_live else get_market_probabilities(
+            comp.get("odds", []), home["id"], away["id"]
+        )
+        if market_probabilities is not None:
+            forecast = market_probabilities
+            game_probabilities[pair] = forecast[:3]
+            probability_sources[pair] = forecast[3]
+        else:
+            forecast_tasks.append((pair, event_id, event_name, is_live, home["id"], away["id"]))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        pending = {
+            executor.submit(fetch_summary_probabilities, event_id, home_id, away_id, is_live): (pair, event_name)
+            for pair, event_id, event_name, is_live, home_id, away_id in forecast_tasks
+        }
+        for future in as_completed(pending):
+            pair, event_name = pending[future]
+            try:
+                forecast = future.result()
+            except (requests.RequestException, ValueError) as e:
+                errors.append(f"{event_name}: {e}")
+                continue
+            game_probabilities[pair] = forecast[:3]
+            probability_sources[pair] = forecast[3]
+
+    for pair, (home_probability, away_probability, _) in game_probabilities.items():
+        team_probabilities[pair[0]] = home_probability
+        team_probabilities[pair[1]] = away_probability
+    return (
+        completed_winners,
+        team_probabilities,
+        pairing_map,
+        active_games,
+        live_leaders,
+        decided_games,
+        game_probabilities,
+        probability_sources,
+        errors,
+    )
+
+st.title("Teal CBS Sports Pick'em")
+st.session_state.setdefault("simulation_seed", 42)
+if st.button("REFRESH"):
+    load_excel_from_gdrive.clear()
+    fetch_espn_nfl_data.clear()
+    st.session_state["simulation_seed"] += 1
+    st.rerun()
 
 picks_df = load_excel_from_gdrive()
 
@@ -139,6 +377,8 @@ if picks_df is None:
 else:
     game_cols = [col for col in picks_df.columns[3:] if 'TIE' not in str(col).upper()]
     parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
+    pick_parse_errors = []
+    column_teams = {col: set() for col in game_cols}
 
     for index in range(1, len(picks_df)):
         raw_name = picks_df.loc[index, 'Players']
@@ -151,27 +391,48 @@ else:
             val = str(picks_df.loc[index, col]).strip()
             if '(' in val and ')' in val:
                 m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
-                if m: player_picks[m.group(1).upper()] = int(m.group(2))
-        
-        if len(player_picks) > 0:
-            parsed_picks[name] = player_picks
+                if m: parsed_picks[name][m.group(1).upper()] = int(m.group(2))
 
     COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS, DECIDED_GAMES = fetch_espn_nfl_data()
     players = list(parsed_picks.keys())
     n_players = len(players)
 
-    st.info(f"**Week Status:** {len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
-
-    raw_player_col = picks_df.columns[0] if len(picks_df.columns) > 0 else 'Players'
-    with st.expander("📊 View this week's player picks."):
-        st.dataframe(
-            picks_df, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                raw_player_col: st.column_config.TextColumn(raw_player_col, pinned=True)
-            }
+    if len(DEFAULT_PAIRING_MAP) != total_games:
+        DATA_ERRORS.append(
+            f"The spreadsheet has {total_games} game columns, but ESPN returned {len(DEFAULT_PAIRING_MAP)} matchups."
         )
+    scheduled_teams = set(TEAM_PROBABILITIES)
+    for player, player_picks in parsed_picks.items():
+        unknown_teams = sorted(set(player_picks) - scheduled_teams)
+        if unknown_teams:
+            DATA_ERRORS.append(f"{player}: picks do not match ESPN teams: {', '.join(unknown_teams)}.")
+        for home_team, away_team in DEFAULT_PAIRING_MAP:
+            if home_team in player_picks and away_team in player_picks:
+                DATA_ERRORS.append(f"{player}: picked both {home_team} and {away_team} in one matchup.")
+    missing_forecasts = [pair for pair in DEFAULT_PAIRING_MAP if pair not in GAME_PROBABILITIES]
+    if missing_forecasts:
+        DATA_ERRORS.append(
+            "Missing probabilities for: "
+            + ", ".join(f"{home} vs {away}" for home, away in missing_forecasts)
+            + "."
+        )
+    team_matchups = {team: pair for pair in DEFAULT_PAIRING_MAP for team in pair}
+    column_matchups = {}
+    for col, teams in column_teams.items():
+        matchups = {team_matchups[team] for team in teams if team in team_matchups}
+        if len(matchups) > 1:
+            DATA_ERRORS.append(f"{col}: picks contain teams from multiple ESPN matchups.")
+        column_matchups[col] = next(iter(matchups)) if len(matchups) == 1 else None
+    if DATA_ERRORS:
+        st.error("Predictions are paused because the matchup or probability data could not be verified.")
+        for error in DATA_ERRORS:
+            st.write(f"- {error}")
+        st.stop()
+
+    st.info(f"{len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
+
+    with st.expander("📊 View Raw Pick Sheet"):
+        st.dataframe(picks_df, use_container_width=True, hide_index=True)
 
     locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
     ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
@@ -200,66 +461,33 @@ else:
         
         pending_items = [
             (t, pts) for t, pts in parsed_picks[p].items() 
-            if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and LIVE_PROBABILITIES.get(t, 0.5) not in (1.0, 0.0)
+            if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and TEAM_PROBABILITIES.get(t) not in (1.0, 0.0)
         ]
         pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
         root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "NONE")
 
-    remaining_cards = {
-        p: tuple(sorted([
-            (t, pts) for t, pts in parsed_picks[p].items()
-            if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES
-        ]))
-        for p in players
-    }
-
-    N_SIMS, pending_pairs = 10000, [pair for pair in DEFAULT_PAIRING_MAP if LIVE_PROBABILITIES.get(pair[0], 0.5) not in (1.0, 0.0) and pair[0] not in DECIDED_GAMES]
-    unresolved = []
-    for t1, t2 in pending_pairs: unresolved.extend([t1, t2])
-
-    np.random.seed(42)
-    weekly_points = np.zeros((n_players, N_SIMS))
-    sim_win_pcts_raw = np.zeros(n_players)
-
-    if len(pending_pairs) > 0 and n_players > 0:
-        sim_wins = np.zeros((N_SIMS, len(unresolved)), dtype=bool)
-        for t1, t2 in pending_pairs:
-            p1 = LIVE_PROBABILITIES.get(t1, 0.5)
-            p2 = LIVE_PROBABILITIES.get(t2, 0.5)
-            total_p = p1 + p2
-            p1_norm = p1 / total_p if total_p > 0 else 0.5
-            wins = np.random.rand(N_SIMS) < p1_norm
-            try:
-                sim_wins[:, unresolved.index(t1)] = wins
-                sim_wins[:, unresolved.index(t2)] = ~wins
-            except ValueError: pass
-
-        for p_idx, player in enumerate(players):
-            weekly_points[p_idx, :] = locked_pts[p_idx]
-            for t_idx, team in enumerate(unresolved):
-                weekly_points[p_idx, :] += sim_wins[:, t_idx] * parsed_picks[player].get(team, 0)
-
-        max_scores = np.max(weekly_points, axis=0)
-        win_shares = (weekly_points == max_scores) / np.sum(weekly_points == max_scores, axis=0)
-        sim_win_pcts_raw = (np.sum(win_shares, axis=1) / N_SIMS) * 100
-    else:
-        for p_idx in range(n_players): weekly_points[p_idx, :] = locked_pts[p_idx]
+    N_SIMS = 10000
+    weekly_points, sim_win_pcts_raw = simulate_weekly_results(
+        players,
+        parsed_picks,
+        locked_pts,
+        DEFAULT_PAIRING_MAP,
+        DECIDED_GAMES,
+        GAME_PROBABILITIES,
+        N_SIMS,
+        st.session_state["simulation_seed"],
+    )
 
     median_scores = np.round(np.median(weekly_points, axis=1)).astype(int) if n_players > 0 else []
-    
-    max_leading_locked = max(locked_pts) if locked_pts else 0
 
     final_root_for = []
     final_sim_win_pcts = []
 
     for idx, p in enumerate(players):
-        p_score = active_proj[idx]
-        p_max = max_pts[idx]
         raw_pct = sim_win_pcts_raw[idx]
-        
-        has_zero_ways = False
-        if p_max < max_leading_locked or p_max == 0 or len(parsed_picks[p]) == 0 or len(remaining_cards[p]) == 0:
-            has_zero_ways = True
+        final_root_for.append(root_for_raw[idx])
+        if 0 < raw_pct < 0.1:
+            final_sim_win_pcts.append("Under 0.1%")
         else:
             for other_idx, other_p in enumerate(players):
                 if p != other_p and len(parsed_picks[other_p]) > 0:
@@ -272,8 +500,8 @@ else:
             final_sim_win_pcts.append("ZERO")
         else:
             final_root_for.append(root_for_raw[idx])
-            if raw_pct < 0.1:
-                final_sim_win_pcts.append("Under 0.1%")
+            if raw_pct < 0.05:
+                final_sim_win_pcts.append("Under .05%")
             else:
                 final_sim_win_pcts.append(f"{raw_pct:.1f}%")
 
@@ -285,7 +513,7 @@ else:
         'YTD Locked + Active': ytd_active_totals,
         'Max': max_pts,
         'Sim Median Pts': median_scores,
-        'Sim Win%': final_sim_win_pcts,
+        'Sim First-Place Share': final_sim_win_pcts,
         'Root For': final_root_for,
     }) if n_players > 0 else pd.DataFrame()
 
@@ -308,47 +536,36 @@ else:
             'YTD Locked + Active', 
             'Max', 
             'Sim Median Pts', 
-            'Sim Win%', 
+            'Sim First-Place Share',
             'Root For'
         ]
         sorted_results = sorted_results[column_order]
 
-        st.dataframe(
-            sorted_results, 
-            use_container_width=True, 
-            hide_index=True, 
-            column_config={
-                "Players": st.column_config.TextColumn("Players", pinned=True),
-                "Locked": st.column_config.NumberColumn("Locked", format="%d"),
-                "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
-                "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
-                "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
-                "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
-                "Max": st.column_config.NumberColumn("Max", format="%d"),
-                "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
-                "Sim Win%": st.column_config.TextColumn("Sim Win%"),
-                "Root For": st.column_config.TextColumn("Root For"),
-            }
-        )
+        st.dataframe(sorted_results, use_container_width=True, hide_index=True, column_config={
+            "Players": st.column_config.TextColumn("Players", pinned=True),
+            "Locked": st.column_config.NumberColumn("Locked", format="%d"),
+            "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
+            "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
+            "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
+            "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
+            "Max": st.column_config.NumberColumn("Max", format="%d"),
+            "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
+            "Sim Win%": st.column_config.TextColumn("Sim Win%"),
+            "Root For": st.column_config.TextColumn("Root For"),
+        })
 
         st.markdown("[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
 
-        st.subheader("📈 Locked, Simulated and Maximum Points")
+        st.subheader("📈 Projected vs Current Performance")
         fig, ax = plt.subplots(figsize=(6, 4))
-        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts', 'Max'])
-        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9', '#f39c12'])
+        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Max', 'Sim Median Pts'])
+        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#f39c12', '#00cec9'])
         ax.tick_params(axis='y', labelsize=8)
         ax.tick_params(axis='x', labelsize=8)
         ax.set_ylabel('Players', fontsize=9)
         ax.set_xlabel('Points', fontsize=9)
         ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
-        
-        for label in ax.get_yticklabels():
-            label.set_horizontalalignment('left')
-        ax.yaxis.set_tick_params(pad=-95)
-
-        for container in ax.containers: 
-            ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
+        for container in ax.containers: ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
         plt.tight_layout()
         st.pyplot(fig)
     else:
