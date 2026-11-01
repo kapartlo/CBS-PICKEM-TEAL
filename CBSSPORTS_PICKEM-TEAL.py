@@ -1,19 +1,3 @@
-"""
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-TEST...........................................
-"""
-
-
 import base64
 from html import escape as html_escape
 import io
@@ -698,6 +682,14 @@ else:
                 background: white;
                 font-weight: bold;
             }
+            .picks-table thead th,
+            .picks-table tbody tr.pinned-row td {
+                color: #202124 !important;
+            }
+            .picks-table tbody tr:not(.pinned-row) td:first-child {
+                color: #ffffff !important;
+                background-color: #0e1117 !important;
+            }
             .picks-table th:nth-child(1),
             .picks-table td:nth-child(1) {
                 position: sticky;
@@ -705,22 +697,64 @@ else:
                 z-index: 5;
                 background: white;
             }
-            #weekly-picks-table th:nth-child(2),
-            #weekly-picks-table td:nth-child(2) {
-                position: sticky;
-                left: var(--players-column-width, 0px);
-                z-index: 5;
-                background: white;
+            #weekly-picks-table thead th:first-child { z-index: 30; }
+            #weekly-picks-table tbody tr.pinned-row td:first-child { z-index: 15; }
+            #simulation-results-table thead th:first-child { z-index: 30; }
+            @media (max-width: 640px) {
+                #weekly-picks-table th:not(:first-child),
+                #weekly-picks-table td:not(:first-child),
+                #simulation-results-table th:not(:first-child),
+                #simulation-results-table td:not(:first-child) {
+                    width: 68px;
+                    min-width: 48px;
+                    max-width: 78px;
+                    padding: 0.25rem 0.3rem;
+                    font-size: 0.75rem;
+                    white-space: normal;
+                    overflow-wrap: anywhere;
+                    vertical-align: middle;
+                }
+                #weekly-picks-table tbody tr.pinned-row td:nth-child(n+4) {
+                    white-space: nowrap;
+                    overflow-wrap: normal;
+                }
+                #simulation-results-table th:last-child,
+                #simulation-results-table td:last-child {
+                    width: max-content;
+                    min-width: max-content;
+                    max-width: none;
+                    padding: 0.25rem 0.3rem;
+                    white-space: nowrap;
+                    overflow: visible;
+                }
+                #simulation-results-table col:not(:first-child) {
+                    width: 68px !important;
+                }
+                #simulation-results-table col:last-child {
+                    width: auto !important;
+                }
+                #weekly-picks-table th:first-child,
+                #weekly-picks-table td:first-child {
+                    width: 38vw;
+                    min-width: 88px;
+                    max-width: 128px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+                #simulation-results-table col:first-child {
+                    width: 38vw !important;
+                }
+                #simulation-results-table th:first-child,
+                #simulation-results-table td:first-child {
+                    width: 38vw;
+                    min-width: 88px;
+                    max-width: 128px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
             }
-            #weekly-picks-table th:nth-child(3),
-            #weekly-picks-table td:nth-child(3) {
-                position: sticky;
-                left: calc(var(--players-column-width, 0px) + var(--locked-column-width, 0px));
-                z-index: 5;
-                background: white;
-            }
-            #weekly-picks-table thead th:nth-child(-n+3) { z-index: 30; }
-            #weekly-picks-table tbody tr.pinned-row td:nth-child(-n+3) { z-index: 15; }
             #weekly-picks-table td.column-heading {
                 text-align: center;
                 font-weight: bold;
@@ -749,19 +783,6 @@ else:
                 const directions = new Map([[1, "desc"], [2, "desc"]]);
                 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
                 const headers = Array.from(table.tHead.rows[0].cells);
-                const updatePinnedColumnWidths = () => {
-                    if (headers.length < 3) return;
-                    table.style.setProperty(
-                        "--players-column-width",
-                        `${headers[0].getBoundingClientRect().width}px`
-                    );
-                    table.style.setProperty(
-                        "--locked-column-width",
-                        `${headers[1].getBoundingClientRect().width}px`
-                    );
-                };
-                updatePinnedColumnWidths();
-                new ResizeObserver(updatePinnedColumnWidths).observe(table);
                 const sortIndicators = [
                     ...headers.slice(3),
                     body.rows[1].cells[0],
