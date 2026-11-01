@@ -389,11 +389,31 @@ else:
         player_picks = {}
         for col in game_cols:
             val = str(picks_df.loc[index, col]).strip()
-            if '(' in val and ')' in val:
-                m = re.match(r'([A-Za-z]+)\((\d+)\)', val)
-                if m: parsed_picks[name][m.group(1).upper()] = int(m.group(2))
+            m = re.fullmatch(r'([A-Za-z]{2,4})\s*\(\s*(\d+)\s*\)', val)
+            if m:
+                team = normalize_team_abbreviation(m.group(1))
+                if team in player_picks:
+                    pick_parse_errors.append(f"{name}: picked {team} more than once.")
+                player_picks[team] = int(m.group(2))
+                column_teams[col].add(team)
+            elif val.upper() not in {"", "-", "NAN", "NONE"}:
+                pick_parse_errors.append(f"{name}: could not parse pick {val!r} in {col!r}.")
 
-    COMPLETED_WINNERS, LIVE_PROBABILITIES, DEFAULT_PAIRING_MAP, ACTIVE_GAMES_COUNT, LIVE_LEADERS, DECIDED_GAMES = fetch_espn_nfl_data()
+        if player_picks:
+            parsed_picks[name] = player_picks
+
+    (
+        COMPLETED_WINNERS,
+        TEAM_PROBABILITIES,
+        DEFAULT_PAIRING_MAP,
+        ACTIVE_GAMES_COUNT,
+        LIVE_LEADERS,
+        DECIDED_GAMES,
+        GAME_PROBABILITIES,
+        PROBABILITY_SOURCES,
+        DATA_ERRORS,
+    ) = fetch_espn_nfl_data()
+    DATA_ERRORS.extend(pick_parse_errors)
     players = list(parsed_picks.keys())
     n_players = len(players)
 
