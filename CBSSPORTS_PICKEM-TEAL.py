@@ -714,6 +714,16 @@ else:
                     overflow-wrap: anywhere;
                     vertical-align: middle;
                 }
+                #weekly-picks-table tbody tr.pinned-row td:nth-child(n+4) {
+                    white-space: nowrap;
+                    overflow-wrap: normal;
+                }
+                #simulation-results-table th:last-child,
+                #simulation-results-table td:last-child {
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
                 #simulation-results-table col:not(:first-child) {
                     width: 68px !important;
                 }
