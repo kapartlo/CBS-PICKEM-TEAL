@@ -399,7 +399,7 @@ else:
             elif val.upper() not in {"", "-", "NAN", "NONE"}:
                 pick_parse_errors.append(f"{name}: could not parse pick {val!r} in {col!r}.")
 
-        if player_picks:
+        if len(player_picks) > 0:
             parsed_picks[name] = player_picks
 
     (
@@ -451,8 +451,114 @@ else:
 
     st.info(f"{len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
 
-    with st.expander("📊 View Raw Pick Sheet"):
-        st.dataframe(picks_df, use_container_width=True, hide_index=True)
+    raw_player_col = picks_df.columns[0] if len(picks_df.columns) > 0 else 'Players'
+    blank_row = {
+        col: np.nan if pd.api.types.is_numeric_dtype(picks_df[col]) else ""
+        for col in picks_df.columns
+    }
+    matchup_row = blank_row.copy()
+    favorite_row = blank_row.copy()
+    matchup_row[raw_player_col] = "Matchup"
+    favorite_row[raw_player_col] = "Sim Favorite (win chance)"
+    for col, pair in column_matchups.items():
+        if pair is not None:
+            home, away = pair
+            matchup_row[col] = f"{home} vs {away}"
+            home_probability, away_probability, _ = GAME_PROBABILITIES[pair]
+            favorite = home if home_probability >= away_probability else away
+            favorite_probability = max(home_probability, away_probability)
+            favorite_row[col] = f"{favorite} ({favorite_probability:.1%})"
+        else:
+            matchup_row[col] = "No picks" if not column_teams[col] else "Unmatched"
+
+    display_picks_df = pd.concat(
+        [
+            pd.DataFrame([matchup_row, favorite_row]),
+            picks_df.iloc[1:],
+        ],
+        ignore_index=True,
+    )
+    numeric_columns = [
+        column
+        for column in display_picks_df.columns
+        if pd.api.types.is_numeric_dtype(display_picks_df[column])
+    ]
+    styled_picks_df = (
+        display_picks_df.style.hide(axis="index")
+        .format(
+            {column: "{:,.0f}" for column in numeric_columns},
+            escape="html",
+        )
+        .set_table_styles(
+            [
+                {
+                    "selector": "thead th",
+                    "props": [
+                        ("font-weight", "bold"),
+                        ("background-color", "#2F6F9F"),
+                        ("color", "white"),
+                    ],
+                },
+                {
+                    "selector": "tbody tr:nth-child(-n+2) td",
+                    "props": [
+                        ("font-weight", "bold"),
+                        ("background-color", "#2F6F9F"),
+                        ("color", "white"),
+                    ],
+                },
+            ]
+        )
+    )
+    matrix_html = styled_picks_df.to_html()
+    matrix_css = """
+        <style>
+            html, body { margin: 0; padding: 0; }
+            .picks-table-scroll { width: 100%; height: 560px; overflow: auto; }
+            .picks-table-scroll table {
+                width: max-content;
+                min-width: 100%;
+                border-collapse: separate;
+                border-spacing: 0;
+            }
+            .picks-table-scroll thead th {
+                position: sticky;
+                top: 0;
+                z-index: 5;
+                white-space: nowrap;
+            }
+            .picks-table-scroll tbody tr:nth-child(1) td {
+                position: sticky;
+                top: 34px;
+                z-index: 4;
+            }
+            .picks-table-scroll tbody tr:nth-child(2) td {
+                position: sticky;
+                top: 68px;
+                z-index: 4;
+            }
+            .picks-table-scroll th:first-child,
+            .picks-table-scroll td:first-child {
+                position: sticky;
+                left: 0;
+            }
+            .picks-table-scroll thead th:first-child { z-index: 7; }
+            .picks-table-scroll tbody td:first-child {
+                z-index: 6;
+                background: white;
+            }
+            .picks-table-scroll tbody tr:nth-child(-n+2) td:first-child {
+                z-index: 8;
+                background: #2F6F9F;
+            }
+        </style>
+    """
+    with st.expander("📊 View this week's player picks."):
+        st.html(
+            f'{matrix_css}<div class="picks-table-scroll">{matrix_html}</div>',
+            width="stretch",
+        )
+    st.markdown("[View CBSSPORTS PICK'EM Website](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
 
     locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
     ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
@@ -509,21 +615,7 @@ else:
         if 0 < raw_pct < 0.1:
             final_sim_win_pcts.append("Under 0.1%")
         else:
-            for other_idx, other_p in enumerate(players):
-                if p != other_p and len(parsed_picks[other_p]) > 0:
-                    if active_proj[other_idx] > p_score and remaining_cards[p] == remaining_cards[other_p]:
-                        has_zero_ways = True
-                        break
-                        
-        if has_zero_ways:
-            final_root_for.append("NONE")
-            final_sim_win_pcts.append("ZERO")
-        else:
-            final_root_for.append(root_for_raw[idx])
-            if raw_pct < 0.05:
-                final_sim_win_pcts.append("Under .05%")
-            else:
-                final_sim_win_pcts.append(f"{raw_pct:.1f}%")
+            final_sim_win_pcts.append(f"{raw_pct:5.1f}%".replace(" ", "\u2007"))
 
     sim_results = pd.DataFrame({
         'Player': players,
@@ -561,32 +653,44 @@ else:
         ]
         sorted_results = sorted_results[column_order]
 
-        st.dataframe(sorted_results, use_container_width=True, hide_index=True, column_config={
-            "Players": st.column_config.TextColumn("Players", pinned=True),
-            "Locked": st.column_config.NumberColumn("Locked", format="%d"),
-            "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
-            "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
-            "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
-            "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
-            "Max": st.column_config.NumberColumn("Max", format="%d"),
-            "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
-            "Sim Win%": st.column_config.TextColumn("Sim Win%"),
-            "Root For": st.column_config.TextColumn("Root For"),
-        })
+        st.dataframe(
+            sorted_results, 
+            use_container_width=True, 
+            hide_index=True, 
+            column_config={
+                "Players": st.column_config.TextColumn("Players", pinned=True),
+                "Locked": st.column_config.NumberColumn("Locked", format="%d"),
+                "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
+                "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
+                "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
+                "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
+                "Max": st.column_config.NumberColumn("Max", format="%d"),
+                "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
+                "Sim First-Place Share": st.column_config.TextColumn("Sim First-Place Share", alignment="right"),
+                "Root For": st.column_config.TextColumn("Root For"),
+            }
+        )
+        st.caption(
+            "Sim First-Place Share is each player's share of first place across 10,000 weekly simulations "
+            "(ties split the share). Simulations use ESPN live win probabilities."
+        )
 
-        st.markdown("[Link to CBSSPORTS PICK'EM](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
-
-        st.subheader("📈 Projected vs Current Performance")
-        fig, ax = plt.subplots(figsize=(6, 4))
-        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Max', 'Sim Median Pts'])
-        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#f39c12', '#00cec9'])
-        ax.tick_params(axis='y', labelsize=8)
+        st.subheader("📈 Locked, Simulated and Maximum Points")
+        fig, ax = plt.subplots(figsize=(8, 5))
+        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts', 'Max'])
+        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9', '#f39c12'])
+        ax.tick_params(axis='y', labelsize=8, pad=2)
         ax.tick_params(axis='x', labelsize=8)
         ax.set_ylabel('Players', fontsize=9)
         ax.set_xlabel('Points', fontsize=9)
-        ax.legend(fontsize=8, title_fontsize=8, loc='lower right')
-        for container in ax.containers: ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
-        plt.tight_layout()
+        ax.legend(fontsize=8, title_fontsize=8, loc='upper center', bbox_to_anchor=(0.5, 1.16), ncol=3)
+        
+        for label in ax.get_yticklabels():
+            label.set_horizontalalignment('right')
+
+        for container in ax.containers: 
+            ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
+        fig.subplots_adjust(left=0.30, right=0.98, bottom=0.14, top=0.78)
         st.pyplot(fig)
     else:
         st.warning("No player picks could be parsed from the uploaded spreadsheet.")
