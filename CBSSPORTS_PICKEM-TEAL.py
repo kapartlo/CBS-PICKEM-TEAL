@@ -705,8 +705,21 @@ else:
                     width: 38vw;
                     min-width: 88px;
                     max-width: 128px;
-                    white-space: normal;
-                    overflow-wrap: anywhere;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+                #simulation-results-table col:first-child {
+                    width: 38vw !important;
+                }
+                #simulation-results-table th:first-child,
+                #simulation-results-table td:first-child {
+                    width: 38vw;
+                    min-width: 88px;
+                    max-width: 128px;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
                 }
             }
             #weekly-picks-table td.column-heading {
