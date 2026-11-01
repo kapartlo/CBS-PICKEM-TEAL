@@ -514,13 +514,13 @@ else:
         if pair is not None:
             home, away = pair
             score = CURRENT_SCORES.get(pair)
-            matchup_details = []
             if score is not None:
-                matchup_details.append(f"{score[0]}-{score[1]}")
-            if pair in LIVE_GAME_STATUS:
-                matchup_details.append(LIVE_GAME_STATUS[pair])
-            details_text = f" ({', '.join(matchup_details)})" if matchup_details else ""
-            matchup_row[col] = f"{home} vs {away}{details_text}"
+                matchup_text = f"{home} {score[1]} vs {away} {score[0]}"
+                if pair in LIVE_GAME_STATUS:
+                    matchup_text += f" ({LIVE_GAME_STATUS[pair]})"
+            else:
+                matchup_text = f"{home} vs {away}"
+            matchup_row[col] = matchup_text
             home_probability, away_probability, _ = GAME_PROBABILITIES[pair]
             favorite = home if home_probability >= away_probability else away
             favorite_probability = max(home_probability, away_probability)
