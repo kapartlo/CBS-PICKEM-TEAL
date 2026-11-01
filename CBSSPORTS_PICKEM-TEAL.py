@@ -15,6 +15,7 @@ TEST...........................................
 
 
 import base64
+from html import escape as html_escape
 import io
 import json
 import math
@@ -379,8 +380,16 @@ else:
     parsed_picks, total_games = {}, len(game_cols) if len(game_cols) > 0 else 16
     pick_parse_errors = []
     column_teams = {col: set() for col in game_cols}
+    ghost_player_rows = picks_df["Players"].astype(str).str.contains(
+        r"\s+sFie[A-Za-z]*$",
+        case=False,
+        na=False,
+    )
+    valid_player_rows = picks_df.loc[~ghost_player_rows]
 
     for index in range(1, len(picks_df)):
+        if ghost_player_rows.iloc[index]:
+            continue
         raw_name = picks_df.loc[index, 'Players']
         if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: continue
         name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
@@ -451,6 +460,40 @@ else:
 
     st.info(f"{len(COMPLETED_WINNERS)} of {total_games} games completed. {ACTIVE_GAMES_COUNT} active. | **Players:** {n_players}")
 
+    locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
+    ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
+
+    for p in players:
+        row = valid_player_rows[
+            valid_player_rows['Players'].astype(str).str.contains(p, na=False)
+        ]
+        base_ytd = float(row.iloc[0][ytd_col]) if not row.empty and ytd_col else 0
+
+        locked = sum(parsed_picks[p].get(t, 0) for t in COMPLETED_WINNERS if t in parsed_picks[p])
+        locked_pts.append(locked)
+
+        ytd_locked_val = int(round(base_ytd + locked))
+        ytd_totals.append(ytd_locked_val)
+
+        live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
+        active_proj.append(locked + live_winning_pts)
+
+        ytd_active_val = int(round(base_ytd + locked + live_winning_pts))
+        ytd_active_totals.append(ytd_active_val)
+
+        max_possible = locked + sum(
+            pts for t, pts in parsed_picks[p].items()
+            if t not in DECIDED_GAMES
+        )
+        max_pts.append(max_possible)
+
+        pending_items = [
+            (t, pts) for t, pts in parsed_picks[p].items()
+            if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and TEAM_PROBABILITIES.get(t) not in (1.0, 0.0)
+        ]
+        pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
+        root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "NONE")
+
     raw_player_col = picks_df.columns[0] if len(picks_df.columns) > 0 else 'Players'
     blank_row = {
         col: np.nan if pd.api.types.is_numeric_dtype(picks_df[col]) else ""
@@ -458,8 +501,8 @@ else:
     }
     matchup_row = blank_row.copy()
     favorite_row = blank_row.copy()
-    matchup_row[raw_player_col] = "Matchup"
-    favorite_row[raw_player_col] = "Sim Favorite (win chance)"
+    matchup_row[raw_player_col] = ""
+    favorite_row[raw_player_col] = ""
     for col, pair in column_matchups.items():
         if pair is not None:
             home, away = pair
@@ -474,123 +517,277 @@ else:
     display_picks_df = pd.concat(
         [
             pd.DataFrame([matchup_row, favorite_row]),
-            picks_df.iloc[1:],
+            valid_player_rows.iloc[1:],
         ],
         ignore_index=True,
     )
-    numeric_columns = [
-        column
-        for column in display_picks_df.columns
-        if pd.api.types.is_numeric_dtype(display_picks_df[column])
-    ]
-    styled_picks_df = (
-        display_picks_df.style.hide(axis="index")
-        .format(
-            {column: "{:,.0f}" for column in numeric_columns},
-            escape="html",
-        )
-        .set_table_styles(
-            [
-                {
-                    "selector": "thead th",
-                    "props": [
-                        ("font-weight", "bold"),
-                        ("background-color", "#2F6F9F"),
-                        ("color", "white"),
-                    ],
-                },
-                {
-                    "selector": "tbody tr:nth-child(-n+2) td",
-                    "props": [
-                        ("font-weight", "bold"),
-                        ("background-color", "#2F6F9F"),
-                        ("color", "white"),
-                    ],
-                },
-            ]
+    pts_col = next(
+        (column for column in picks_df.columns if str(column).strip().casefold() == "pts"),
+        None,
+    )
+    ytd_display_col = next(
+        (column for column in picks_df.columns if str(column).strip().casefold() == "ytd"),
+        None,
+    )
+    weekly_points_by_player = dict(zip(players, active_proj))
+    ytd_points_by_player = dict(zip(players, ytd_active_totals))
+    player_ranks = dict(
+        zip(
+            players,
+            pd.Series(active_proj).rank(method="min", ascending=False).astype(int),
         )
     )
-    matrix_html = styled_picks_df.to_html()
-    matrix_css = """
+    if pts_col is not None or ytd_display_col is not None:
+        for row_index in range(2, len(display_picks_df)):
+            raw_name = display_picks_df.at[row_index, raw_player_col]
+            if pd.isna(raw_name) or str(raw_name).strip() in {"", "-", "NaN"}:
+                continue
+            name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
+            name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
+            if pts_col is not None:
+                display_picks_df.at[row_index, pts_col] = weekly_points_by_player.get(name, 0)
+            if ytd_display_col is not None:
+                display_picks_df.at[row_index, ytd_display_col] = ytd_points_by_player.get(name, 0)
+            if name in player_ranks:
+                rank = player_ranks[name]
+                display_picks_df.at[row_index, raw_player_col] = (
+                    f"{rank}{get_ordinal_suffix(rank)}  {name}"
+                )
+
+    completed_columns = {
+        column
+        for column, pair in column_matchups.items()
+        if pair is not None and set(pair).issubset(DECIDED_GAMES)
+    }
+    display_picks_df.columns = [
+        "Players"
+        if column == raw_player_col
+        else "Locked + Active"
+        if re.sub(r"\.\d+$", "", str(column)).strip().casefold() == "pts"
+        else "YTD Locked + Active"
+        if re.sub(r"\.\d+$", "", str(column)).strip().casefold() == "ytd"
+        else "Completed"
+        if column in completed_columns
+        else re.sub(r"\.\d+$", "", str(column))
+        for column in display_picks_df.columns
+    ]
+    for column in ("Players", "Locked + Active", "YTD Locked + Active"):
+        if column in display_picks_df:
+            display_picks_df[column] = display_picks_df[column].astype(object)
+    display_picks_df.at[1, "Players"] = "Players"
+    display_picks_df.at[1, "Locked + Active"] = "Locked + Active"
+    if "YTD Locked + Active" in display_picks_df:
+        display_picks_df.at[1, "YTD Locked + Active"] = "YTD Locked + Active"
+
+    sort_columns = [
+        column
+        for column in ("Locked + Active", "YTD Locked + Active")
+        if column in display_picks_df
+    ]
+    display_player_rows = display_picks_df.iloc[2:]
+    if sort_columns:
+        display_player_rows = display_player_rows.sort_values(
+            by=sort_columns,
+            ascending=[False] * len(sort_columns),
+            kind="mergesort",
+            na_position="last",
+        )
+    display_picks_df = pd.concat(
+        [display_picks_df.iloc[:2], display_player_rows],
+        ignore_index=True,
+    )
+
+    def format_pick_cell(value):
+        if pd.isna(value):
+            return "", ""
+        if isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
+            if not np.isfinite(value):
+                return "", ""
+            display_value = f"{value:,.0f}"
+            sort_value = f"{value:.15g}"
+        else:
+            display_value = str(value)
+            sort_value = display_value
+        return html_escape(display_value, quote=True), html_escape(sort_value, quote=True)
+
+    table_headers = "".join(
+        f'<th scope="col" tabindex="0" data-column="{index}">'
+        f'{"" if index < 3 else html_escape(str(column))}</th>'
+        for index, column in enumerate(display_picks_df.columns)
+    )
+    column_widths = [
+        "250px" if index == 0 else "140px" if index == 1 else "110px"
+        for index in range(len(display_picks_df.columns))
+    ]
+    table_colgroup = "".join(f'<col style="width:{width}">' for width in column_widths)
+    table_rows = []
+    for row_index, row in enumerate(display_picks_df.itertuples(index=False, name=None)):
+        cells = []
+        for value in row:
+            display_value, sort_value = format_pick_cell(value)
+            cell_tabindex = ' tabindex="0"' if row_index < 2 else ""
+            cells.append(
+                f'<td{cell_tabindex} data-sort="{sort_value}">{display_value}</td>'
+            )
+        row_class = ' class="pinned-row"' if row_index < 2 else ""
+        table_rows.append(f"<tr{row_class}>{''.join(cells)}</tr>")
+
+    matrix_html = f"""
+        <div class="picks-table-scroll">
+            <table class="picks-table" id="weekly-picks-table">
+                <colgroup>{table_colgroup}</colgroup>
+                <thead><tr>{table_headers}</tr></thead>
+                <tbody>{''.join(table_rows)}</tbody>
+            </table>
+        </div>
+    """
+    matrix_code = """
         <style>
-            html, body { margin: 0; padding: 0; }
             .picks-table-scroll { width: 100%; height: 560px; overflow: auto; }
-            .picks-table-scroll table {
+            .picks-table {
                 width: max-content;
                 min-width: 100%;
                 border-collapse: separate;
                 border-spacing: 0;
+                table-layout: fixed;
+                border-top: 1px solid #d5dce5;
+                border-left: 1px solid #d5dce5;
             }
-            .picks-table-scroll thead th {
+            .picks-table th,
+            .picks-table td {
+                height: 38px;
+                padding: 0.4rem 0.65rem;
+                box-sizing: border-box;
+                border-right: 1px solid #d5dce5;
+                border-bottom: 1px solid #d5dce5;
+                white-space: nowrap;
+                text-align: center;
+            }
+            .picks-table th:first-child,
+            .picks-table td:first-child {
+                text-align: left;
+            }
+            .picks-table thead th,
+            .picks-table tbody tr.pinned-row td {
+                cursor: pointer;
+            }
+            .picks-table thead th {
                 position: sticky;
                 top: 0;
-                z-index: 5;
-                white-space: nowrap;
+                z-index: 20;
+                background: white;
+                font-weight: bold;
             }
-            .picks-table-scroll tbody tr:nth-child(1) td {
+            .picks-table tbody tr.pinned-row:nth-child(1) td {
                 position: sticky;
-                top: 34px;
-                z-index: 4;
+                top: 38px;
+                z-index: 10;
+                background: white;
+                font-weight: bold;
             }
-            .picks-table-scroll tbody tr:nth-child(2) td {
+            .picks-table tbody tr.pinned-row:nth-child(2) td {
                 position: sticky;
-                top: 68px;
-                z-index: 4;
+                top: 76px;
+                z-index: 10;
+                background: white;
+                font-weight: bold;
             }
-            .picks-table-scroll th:first-child,
-            .picks-table-scroll td:first-child {
+            .picks-table th:nth-child(1),
+            .picks-table td:nth-child(1) {
                 position: sticky;
                 left: 0;
-            }
-            .picks-table-scroll thead th:first-child { z-index: 7; }
-            .picks-table-scroll tbody td:first-child {
-                z-index: 6;
+                z-index: 5;
                 background: white;
             }
-            .picks-table-scroll tbody tr:nth-child(-n+2) td:first-child {
-                z-index: 8;
-                background: #2F6F9F;
+            .picks-table th:nth-child(2),
+            .picks-table td:nth-child(2) {
+                position: sticky;
+                left: 250px;
+                z-index: 5;
+                background: white;
+            }
+            .picks-table th:nth-child(3),
+            .picks-table td:nth-child(3) {
+                position: sticky;
+                left: 390px;
+                z-index: 5;
+                background: white;
+            }
+            .picks-table thead th:nth-child(-n+3) { z-index: 30; }
+            .picks-table tbody tr.pinned-row td:nth-child(-n+3) { z-index: 15; }
+            .picks-table thead th,
+            .picks-table tbody tr.pinned-row td,
+            .picks-table thead th:nth-child(-n+3),
+            .picks-table tbody tr.pinned-row:nth-child(1) td,
+            .picks-table tbody tr.pinned-row:nth-child(2) td,
+            .picks-table tbody tr.pinned-row td:nth-child(-n+3) {
+                background-color: #eaf3ff;
+            }
+            .picks-table .sorted-asc::after { content: " ▲"; }
+            .picks-table .sorted-desc::after { content: " ▼"; }
+            .picks-table thead th:focus-visible,
+            .picks-table tbody tr.pinned-row td:focus-visible {
+                outline: 2px solid #2F6F9F;
             }
         </style>
+        <script>
+            (() => {
+                const table = document.getElementById("weekly-picks-table");
+                if (!table) return;
+                const body = table.tBodies[0];
+                const directions = new Map([[1, "desc"], [2, "desc"]]);
+                const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
+                const headers = Array.from(table.tHead.rows[0].cells);
+                const sortIndicators = [
+                    ...headers.slice(3),
+                    body.rows[1].cells[0],
+                    body.rows[1].cells[1],
+                    body.rows[1].cells[2],
+                ];
+                sortIndicators[sortIndicators.length - 2].classList.add("sorted-desc");
+                sortIndicators[sortIndicators.length - 1].classList.add("sorted-desc");
+                const sortColumn = (index) => {
+                    const previous = directions.get(index);
+                    const direction = previous ? (previous === "desc" ? "asc" : "desc") : "asc";
+                    directions.clear();
+                    directions.set(index, direction);
+                    sortIndicators.forEach((item) => item.classList.remove("sorted-asc", "sorted-desc"));
+                    const indicator = index < 3 ? body.rows[1].cells[index] : headers[index];
+                    indicator.classList.add(`sorted-${direction}`);
+                    const rows = Array.from(body.rows).slice(2);
+                    rows.sort((left, right) => {
+                        const a = left.cells[index].dataset.sort || "";
+                        const b = right.cells[index].dataset.sort || "";
+                        if (!a && b) return 1;
+                        if (a && !b) return -1;
+                        const comparison = collator.compare(a, b);
+                        return direction === "asc" ? comparison : -comparison;
+                    });
+                    rows.forEach((row) => body.appendChild(row));
+                };
+                const sortableCells = [
+                    ...headers.slice(3),
+                    ...Array.from(body.rows).slice(0, 2).flatMap((row) => Array.from(row.cells)),
+                ];
+                sortableCells.forEach((cell) => {
+                    cell.addEventListener("click", () => sortColumn(cell.cellIndex));
+                    cell.addEventListener("keydown", (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            cell.click();
+                        }
+                    });
+                });
+            })();
+        </script>
     """
     with st.expander("📊 View this week's player picks."):
         st.html(
-            f'{matrix_css}<div class="picks-table-scroll">{matrix_html}</div>',
+            f'{matrix_html}{matrix_code}',
             width="stretch",
+            unsafe_allow_javascript=True,
         )
     st.markdown("[View CBSSPORTS PICK'EM Website](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
-
-    locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
-    ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
-
-    for p in players:
-        row = picks_df[picks_df['Players'].astype(str).str.contains(p, na=False)]
-        base_ytd = float(row.iloc[0][ytd_col]) if not row.empty and ytd_col else 0
-        
-        locked = sum(parsed_picks[p].get(t, 0) for t in COMPLETED_WINNERS if t in parsed_picks[p])
-        locked_pts.append(locked)
-        
-        ytd_locked_val = int(round(base_ytd + locked))
-        ytd_totals.append(ytd_locked_val)
-        
-        live_winning_pts = sum(parsed_picks[p].get(t, 0) for t in LIVE_LEADERS if t in parsed_picks[p])
-        active_proj.append(locked + live_winning_pts)
-        
-        ytd_active_val = int(round(base_ytd + locked + live_winning_pts))
-        ytd_active_totals.append(ytd_active_val)
-        
-        max_possible = locked + sum(
-            pts for t, pts in parsed_picks[p].items() 
-            if t not in DECIDED_GAMES
-        )
-        max_pts.append(max_possible)
-        
-        pending_items = [
-            (t, pts) for t, pts in parsed_picks[p].items() 
-            if t not in COMPLETED_WINNERS and t not in DECIDED_GAMES and TEAM_PROBABILITIES.get(t) not in (1.0, 0.0)
-        ]
-        pending = sorted(pending_items, key=lambda x: x[1], reverse=True)
-        root_for_raw.append(", ".join([f"{t}({pts})" for t, pts in pending[:3]]) if pending else "NONE")
 
     N_SIMS = 10000
     weekly_points, sim_win_pcts_raw = simulate_weekly_results(
@@ -637,7 +834,10 @@ else:
             lambda row: f"{row['Wk Rank']}{get_ordinal_suffix(row['Wk Rank'])}  {row['Player']}", axis=1
         )
         
-        sorted_results = sim_results.sort_values(by=['Locked + Active', 'Sim Median Pts'], ascending=[False, False]).reset_index(drop=True)
+        sorted_results = sim_results.sort_values(
+            by=['Locked + Active', 'YTD Locked'],
+            ascending=[False, False],
+        ).reset_index(drop=True)
         
         column_order = [
             'Players', 
@@ -653,22 +853,70 @@ else:
         ]
         sorted_results = sorted_results[column_order]
 
-        st.dataframe(
-            sorted_results, 
-            use_container_width=True, 
-            hide_index=True, 
-            column_config={
-                "Players": st.column_config.TextColumn("Players", pinned=True),
-                "Locked": st.column_config.NumberColumn("Locked", format="%d"),
-                "Locked + Active": st.column_config.NumberColumn("Locked + Active", format="%d"),
-                "YTD Rank": st.column_config.NumberColumn("YTD Rank", format="%d"),
-                "YTD Locked": st.column_config.NumberColumn("YTD Locked", format="%d"),
-                "YTD Locked + Active": st.column_config.NumberColumn("YTD Locked + Active", format="%d"),
-                "Max": st.column_config.NumberColumn("Max", format="%d"),
-                "Sim Median Pts": st.column_config.NumberColumn("Sim Median Pts", format="%d"),
-                "Sim First-Place Share": st.column_config.TextColumn("Sim First-Place Share", alignment="right"),
-                "Root For": st.column_config.TextColumn("Root For"),
-            }
+        results_headers = "".join(
+            f'<th scope="col" tabindex="0">{html_escape(str(column))}</th>'
+            for column in sorted_results.columns
+        )
+        results_rows = []
+        for result_row in sorted_results.itertuples(index=False, name=None):
+            cells = []
+            for value in result_row:
+                display_value, sort_value = format_pick_cell(value)
+                cells.append(f'<td data-sort="{sort_value}">{display_value}</td>')
+            results_rows.append(f"<tr>{''.join(cells)}</tr>")
+        results_colgroup = "".join(
+            f'<col style="width:{"250px" if index == 0 else "140px" if index == 1 else "110px"}">'
+            for index in range(len(sorted_results.columns))
+        )
+        results_html = f"""
+            <div class="picks-table-scroll simulation-results-scroll">
+                <table class="picks-table simulation-results-table" id="simulation-results-table">
+                    <colgroup>{results_colgroup}</colgroup>
+                    <thead><tr>{results_headers}</tr></thead>
+                    <tbody>{''.join(results_rows)}</tbody>
+                </table>
+            </div>
+        """
+        results_sorting = """
+            <script>
+                (() => {
+                    const table = document.getElementById("simulation-results-table");
+                    if (!table) return;
+                    const headers = Array.from(table.tHead.rows[0].cells);
+                    const body = table.tBodies[0];
+                    const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
+                    const initialSort = headers.findIndex((header) => header.textContent === "Locked + Active");
+                    if (initialSort >= 0) headers[initialSort].classList.add("sorted-desc");
+                    headers.forEach((header, index) => {
+                        header.addEventListener("click", () => {
+                            const direction = header.classList.contains("sorted-desc") ? "asc" : "desc";
+                            headers.forEach((item) => item.classList.remove("sorted-asc", "sorted-desc"));
+                            header.classList.add(`sorted-${direction}`);
+                            const rows = Array.from(body.rows);
+                            rows.sort((left, right) => {
+                                const a = left.cells[index].dataset.sort || "";
+                                const b = right.cells[index].dataset.sort || "";
+                                if (!a && b) return 1;
+                                if (a && !b) return -1;
+                                const comparison = collator.compare(a, b);
+                                return direction === "asc" ? comparison : -comparison;
+                            });
+                            rows.forEach((row) => body.appendChild(row));
+                        });
+                        header.addEventListener("keydown", (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                header.click();
+                            }
+                        });
+                    });
+                })();
+            </script>
+        """
+        st.html(
+            f"{results_html}{matrix_code.split('<script>', 1)[0]}{results_sorting}",
+            width="stretch",
+            unsafe_allow_javascript=True,
         )
         st.caption(
             "Sim First-Place Share is each player's share of first place across 10,000 weekly simulations "
