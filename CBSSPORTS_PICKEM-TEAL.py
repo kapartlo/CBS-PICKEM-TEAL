@@ -991,7 +991,7 @@ else:
         if max_pts[idx] < max_locked_opponent:
             final_sim_win_pcts.append("None")
             continue
-        if 0 < raw_pct < 0.1:
+        if 0 <= raw_pct < 0.1:
             final_sim_win_pcts.append("Under 0.1%")
         else:
             final_sim_win_pcts.append(f"{raw_pct:5.1f}%".replace(" ", "\u2007"))
