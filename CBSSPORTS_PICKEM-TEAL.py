@@ -615,17 +615,18 @@ else:
         f'{"" if index < 3 else html_escape(str(column))}</th>'
         for index, column in enumerate(display_picks_df.columns)
     )
-    column_widths = [
-        "250px" if index == 0 else "140px" if index == 1 else "110px"
-        for index in range(len(display_picks_df.columns))
-    ]
-    table_colgroup = "".join(f'<col style="width:{width}">' for width in column_widths)
     table_rows = []
     for row_index, row in enumerate(display_picks_df.itertuples(index=False, name=None)):
         cells = []
-        for value in row:
+        for column_index, value in enumerate(row):
             display_value, sort_value = format_pick_cell(value)
             cell_tabindex = ' tabindex="0"' if row_index < 2 else ""
+            if row_index == 1 and column_index < 3:
+                cells.append(
+                    f'<td class="column-heading" tabindex="0" data-sort="{sort_value}">'
+                    f'{display_value}</td>'
+                )
+                continue
             cells.append(
                 f'<td{cell_tabindex} data-sort="{sort_value}">{display_value}</td>'
             )
@@ -633,9 +634,8 @@ else:
         table_rows.append(f"<tr{row_class}>{''.join(cells)}</tr>")
 
     matrix_html = f"""
-        <div class="picks-table-scroll">
-            <table class="picks-table" id="weekly-picks-table">
-                <colgroup>{table_colgroup}</colgroup>
+        <div class="picks-table-scroll weekly-picks-scroll">
+            <table class="picks-table weekly-picks-table" id="weekly-picks-table">
                 <thead><tr>{table_headers}</tr></thead>
                 <tbody>{''.join(table_rows)}</tbody>
             </table>
@@ -644,6 +644,7 @@ else:
     matrix_code = """
         <style>
             .picks-table-scroll { width: 100%; height: 560px; overflow: auto; }
+            .weekly-picks-scroll { overflow-x: auto; }
             .picks-table {
                 width: max-content;
                 min-width: 100%;
@@ -652,6 +653,11 @@ else:
                 table-layout: fixed;
                 border-top: 1px solid #d5dce5;
                 border-left: 1px solid #d5dce5;
+            }
+            #weekly-picks-table {
+                width: max-content;
+                min-width: 100%;
+                table-layout: auto;
             }
             .picks-table th,
             .picks-table td {
@@ -699,29 +705,34 @@ else:
                 z-index: 5;
                 background: white;
             }
-            .picks-table th:nth-child(2),
-            .picks-table td:nth-child(2) {
+            #weekly-picks-table th:nth-child(2),
+            #weekly-picks-table td:nth-child(2) {
                 position: sticky;
-                left: 250px;
+                left: var(--players-column-width, 0px);
                 z-index: 5;
                 background: white;
             }
-            .picks-table th:nth-child(3),
-            .picks-table td:nth-child(3) {
+            #weekly-picks-table th:nth-child(3),
+            #weekly-picks-table td:nth-child(3) {
                 position: sticky;
-                left: 390px;
+                left: calc(var(--players-column-width, 0px) + var(--locked-column-width, 0px));
                 z-index: 5;
                 background: white;
             }
-            .picks-table thead th:nth-child(-n+3) { z-index: 30; }
-            .picks-table tbody tr.pinned-row td:nth-child(-n+3) { z-index: 15; }
+            #weekly-picks-table thead th:nth-child(-n+3) { z-index: 30; }
+            #weekly-picks-table tbody tr.pinned-row td:nth-child(-n+3) { z-index: 15; }
+            #weekly-picks-table td.column-heading {
+                text-align: center;
+                font-weight: bold;
+                background-color: #eaf3ff !important;
+            }
             .picks-table thead th,
             .picks-table tbody tr.pinned-row td,
             .picks-table thead th:nth-child(-n+3),
             .picks-table tbody tr.pinned-row:nth-child(1) td,
             .picks-table tbody tr.pinned-row:nth-child(2) td,
             .picks-table tbody tr.pinned-row td:nth-child(-n+3) {
-                background-color: #eaf3ff;
+                background-color: #eaf3ff !important;
             }
             .picks-table .sorted-asc::after { content: " ▲"; }
             .picks-table .sorted-desc::after { content: " ▼"; }
@@ -738,6 +749,19 @@ else:
                 const directions = new Map([[1, "desc"], [2, "desc"]]);
                 const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
                 const headers = Array.from(table.tHead.rows[0].cells);
+                const updatePinnedColumnWidths = () => {
+                    if (headers.length < 3) return;
+                    table.style.setProperty(
+                        "--players-column-width",
+                        `${headers[0].getBoundingClientRect().width}px`
+                    );
+                    table.style.setProperty(
+                        "--locked-column-width",
+                        `${headers[1].getBoundingClientRect().width}px`
+                    );
+                };
+                updatePinnedColumnWidths();
+                new ResizeObserver(updatePinnedColumnWidths).observe(table);
                 const sortIndicators = [
                     ...headers.slice(3),
                     body.rows[1].cells[0],
