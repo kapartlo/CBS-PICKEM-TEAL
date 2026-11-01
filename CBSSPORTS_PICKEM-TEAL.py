@@ -682,6 +682,12 @@ else:
                 background: white;
                 font-weight: bold;
             }
+            .picks-table thead th,
+            .picks-table tbody tr.pinned-row td,
+            #weekly-picks-table th:nth-child(-n+3),
+            #weekly-picks-table td:nth-child(-n+3) {
+                color: #202124;
+            }
             .picks-table th:nth-child(1),
             .picks-table td:nth-child(1) {
                 position: sticky;
