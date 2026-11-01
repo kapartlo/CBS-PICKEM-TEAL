@@ -699,7 +699,24 @@ else:
             }
             #weekly-picks-table thead th:first-child { z-index: 30; }
             #weekly-picks-table tbody tr.pinned-row td:first-child { z-index: 15; }
+            #simulation-results-table thead th:first-child { z-index: 30; }
             @media (max-width: 640px) {
+                #weekly-picks-table th:not(:first-child),
+                #weekly-picks-table td:not(:first-child),
+                #simulation-results-table th:not(:first-child),
+                #simulation-results-table td:not(:first-child) {
+                    width: 68px;
+                    min-width: 48px;
+                    max-width: 78px;
+                    padding: 0.25rem 0.3rem;
+                    font-size: 0.75rem;
+                    white-space: normal;
+                    overflow-wrap: anywhere;
+                    vertical-align: middle;
+                }
+                #simulation-results-table col:not(:first-child) {
+                    width: 68px !important;
+                }
                 #weekly-picks-table th:first-child,
                 #weekly-picks-table td:first-child {
                     width: 38vw;
