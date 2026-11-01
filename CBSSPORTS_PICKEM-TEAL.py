@@ -660,11 +660,39 @@ else:
                 )
                 if pair is not None and pick_match:
                     picked_team = normalize_team_abbreviation(pick_match.group(1))
-                    if picked_team in pair and picked_team in COMPLETED_WINNERS:
+                    score = CURRENT_SCORES.get(pair)
+                    if (
+                        picked_team in pair
+                        and pair in DECIDED_GAMES
+                        and picked_team in COMPLETED_WINNERS
+                    ):
                         display_value += (
                             ' <span class="pick-status correct" '
                             'title="Correct pick — game final" aria-label="Correct pick, game final">'
-                            '&#128274;</span>'
+                            '&#10004;</span>'
+                        )
+                    elif (
+                        picked_team in pair
+                        and pair in DECIDED_GAMES
+                        and score is not None
+                        and score[0] != score[1]
+                    ):
+                        display_value += (
+                            ' <span class="pick-status incorrect-final" '
+                            'title="Incorrect pick — game final" '
+                            'aria-label="Incorrect pick, game final">&#10006;</span>'
+                        )
+                    elif (
+                        picked_team in pair
+                        and pair in LIVE_GAME_STATUS
+                        and score is not None
+                        and score[0] != score[1]
+                        and picked_team not in LIVE_LEADERS
+                    ):
+                        display_value += (
+                            ' <span class="pick-status trailing" '
+                            'title="Your pick is currently trailing" '
+                            'aria-label="Your pick is currently trailing">&#9632;</span>'
                         )
                     elif picked_team in pair and picked_team in LIVE_LEADERS:
                         display_value += (
@@ -850,7 +878,17 @@ else:
                 font-weight: bold;
             }
             .pick-status.leading { color: #16803c; }
-            .pick-status.correct { color: #1677c8; }
+            .pick-status.trailing { color: #d32f2f; }
+            .pick-status.correct {
+                color: #16803c;
+                font-size: 1.25em;
+                line-height: 0.8;
+            }
+            .pick-status.incorrect-final {
+                color: #d32f2f;
+                font-size: 1.25em;
+                line-height: 0.8;
+            }
             @media (min-width: 641px) {
                 #weekly-picks-table th:first-child,
                 #weekly-picks-table td:first-child,
@@ -998,7 +1036,8 @@ else:
         sorted_results = sorted_results[column_order]
 
         results_headers = "".join(
-            f'<th scope="col" tabindex="0">{html_escape(str(column))}</th>'
+            f'<th scope="col" tabindex="0">'
+            f'{html_escape("YTD Locked Rank" if column == "YTD Rank" else str(column))}</th>'
             for column in sorted_results.columns
         )
         results_rows = []
