@@ -720,12 +720,18 @@ else:
                 }
                 #simulation-results-table th:last-child,
                 #simulation-results-table td:last-child {
+                    width: max-content;
+                    min-width: max-content;
+                    max-width: none;
+                    padding: 0.25rem 0.3rem;
                     white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
+                    overflow: visible;
                 }
                 #simulation-results-table col:not(:first-child) {
                     width: 68px !important;
+                }
+                #simulation-results-table col:last-child {
+                    width: auto !important;
                 }
                 #weekly-picks-table th:first-child,
                 #weekly-picks-table td:first-child {
