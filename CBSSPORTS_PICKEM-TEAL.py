@@ -205,6 +205,8 @@ def fetch_espn_nfl_data():
     pairing_map = []
     game_probabilities = {}
     probability_sources = {}
+    current_scores = {}
+    live_game_status = {}
     active_games = 0
     live_leaders = []
     decided_games = set()
@@ -221,7 +223,7 @@ def fetch_espn_nfl_data():
         TypeError,
         ValueError,
     ) as e:
-        return completed_winners, team_probabilities, pairing_map, active_games, live_leaders, decided_games, game_probabilities, probability_sources, [f"Could not load ESPN scoreboard: {e}"]
+        return completed_winners, team_probabilities, pairing_map, active_games, live_leaders, decided_games, game_probabilities, probability_sources, current_scores, live_game_status, [f"Could not load ESPN scoreboard: {e}"]
 
     forecast_tasks = []
     seen_team_ids = set()
@@ -235,7 +237,8 @@ def fetch_espn_nfl_data():
             continue
 
         comp = competitions[0]
-        status_data = comp.get("status", {}).get("type", {})
+        status_info = comp.get("status", {})
+        status_data = status_info.get("type", {})
         status = status_data.get("name", "")
         game_state = status_data.get("state", "")
         is_final = status.startswith("STATUS_FINAL") or status_data.get("completed", False) or game_state == "post"
@@ -281,8 +284,24 @@ def fetch_espn_nfl_data():
         pairing_map.append(pair)
         team_probabilities[home["abbr"]] = None
         team_probabilities[away["abbr"]] = None
+        if is_live or is_final:
+            current_scores[pair] = (home["score"], away["score"])
         if is_live:
             active_games += 1
+            period = status_info.get("period")
+            display_clock = status_info.get("displayClock")
+            status_detail = status_data.get("detail", "")
+            if "halftime" in str(status_detail).casefold():
+                live_game_status[pair] = "Halftime"
+            elif isinstance(period, int) and period > 4:
+                overtime = "OT" if period == 5 else f"{period - 4}OT"
+                live_game_status[pair] = f"{overtime} {display_clock}".strip() if display_clock else overtime
+            elif isinstance(period, int) and period > 0:
+                quarter_suffix = "st" if period == 1 else "nd" if period == 2 else "rd" if period == 3 else "th"
+                quarter = f"{period}{quarter_suffix} Q"
+                live_game_status[pair] = f"{quarter} {display_clock}" if display_clock else quarter
+            elif status_detail:
+                live_game_status[pair] = str(status_detail)
             if home["score"] > away["score"]:
                 live_leaders.append(home["abbr"])
             elif away["score"] > home["score"]:
@@ -344,6 +363,8 @@ def fetch_espn_nfl_data():
         decided_games,
         game_probabilities,
         probability_sources,
+        current_scores,
+        live_game_status,
         errors,
     )
 
@@ -404,6 +425,8 @@ else:
         DECIDED_GAMES,
         GAME_PROBABILITIES,
         PROBABILITY_SOURCES,
+        CURRENT_SCORES,
+        LIVE_GAME_STATUS,
         DATA_ERRORS,
     ) = fetch_espn_nfl_data()
     DATA_ERRORS.extend(pick_parse_errors)
@@ -490,7 +513,14 @@ else:
     for col, pair in column_matchups.items():
         if pair is not None:
             home, away = pair
-            matchup_row[col] = f"{home} vs {away}"
+            score = CURRENT_SCORES.get(pair)
+            matchup_details = []
+            if score is not None:
+                matchup_details.append(f"{score[0]}-{score[1]}")
+            if pair in LIVE_GAME_STATUS:
+                matchup_details.append(LIVE_GAME_STATUS[pair])
+            details_text = f" ({', '.join(matchup_details)})" if matchup_details else ""
+            matchup_row[col] = f"{home} vs {away}{details_text}"
             home_probability, away_probability, _ = GAME_PROBABILITIES[pair]
             favorite = home if home_probability >= away_probability else away
             favorite_probability = max(home_probability, away_probability)
@@ -550,7 +580,7 @@ else:
         if re.sub(r"\.\d+$", "", str(column)).strip().casefold() == "pts"
         else "YTD Locked + Active"
         if re.sub(r"\.\d+$", "", str(column)).strip().casefold() == "ytd"
-        else "Completed"
+        else "Final"
         if column in completed_columns
         else re.sub(r"\.\d+$", "", str(column))
         for column in display_picks_df.columns
@@ -600,11 +630,48 @@ else:
         for index, column in enumerate(display_picks_df.columns)
     )
     table_rows = []
+    teams_to_emphasize = set(COMPLETED_WINNERS) | set(LIVE_LEADERS)
     for row_index, row in enumerate(display_picks_df.itertuples(index=False, name=None)):
         cells = []
         for column_index, value in enumerate(row):
             display_value, sort_value = format_pick_cell(value)
             cell_tabindex = ' tabindex="0"' if row_index < 2 else ""
+            if row_index == 0 and column_index >= 3:
+                original_column = picks_df.columns[column_index]
+                pair = column_matchups.get(original_column)
+                if pair is not None:
+                    leading_team = next(
+                        (team for team in pair if team in teams_to_emphasize),
+                        None,
+                    )
+                    if leading_team:
+                        escaped_team = html_escape(leading_team, quote=True)
+                        display_value = display_value.replace(
+                            escaped_team,
+                            f"<strong>{escaped_team}</strong>",
+                            1,
+                        )
+            elif row_index >= 2 and column_index >= 3:
+                original_column = picks_df.columns[column_index]
+                pair = column_matchups.get(original_column)
+                pick_match = re.fullmatch(
+                    r"\s*([A-Za-z]{2,4})\s*\(\s*\d+\s*\)\s*",
+                    str(value),
+                )
+                if pair is not None and pick_match:
+                    picked_team = normalize_team_abbreviation(pick_match.group(1))
+                    if picked_team in pair and picked_team in COMPLETED_WINNERS:
+                        display_value += (
+                            ' <span class="pick-status correct" '
+                            'title="Correct pick — game final" aria-label="Correct pick, game final">'
+                            '&#128274;</span>'
+                        )
+                    elif picked_team in pair and picked_team in LIVE_LEADERS:
+                        display_value += (
+                            ' <span class="pick-status leading" '
+                            'title="Your pick is currently leading" '
+                            'aria-label="Your pick is currently leading">&#9650;</span>'
+                        )
             if row_index == 1 and column_index < 3:
                 cells.append(
                     f'<td class="column-heading" tabindex="0" data-sort="{sort_value}">'
@@ -637,6 +704,7 @@ else:
                 table-layout: fixed;
                 border-top: 1px solid #d5dce5;
                 border-left: 1px solid #d5dce5;
+                color-scheme: light;
             }
             #weekly-picks-table {
                 width: max-content;
@@ -768,6 +836,30 @@ else:
             .picks-table tbody tr.pinned-row td:nth-child(-n+3) {
                 background-color: #eaf3ff !important;
             }
+            .picks-table tbody tr:not(.pinned-row) td {
+                color: #202124 !important;
+                background-color: #ffffff !important;
+            }
+            .picks-table tbody tr:not(.pinned-row) td:first-child {
+                color: #ffffff !important;
+                background-color: #0e1117 !important;
+            }
+            .pick-status {
+                display: inline-block;
+                margin-left: 0.2rem;
+                font-weight: bold;
+            }
+            .pick-status.leading { color: #16803c; }
+            .pick-status.correct { color: #1677c8; }
+            @media (min-width: 641px) {
+                #weekly-picks-table th:first-child,
+                #weekly-picks-table td:first-child,
+                #simulation-results-table th:first-child,
+                #simulation-results-table td:first-child {
+                    color: #202124 !important;
+                    background-color: #ffffff !important;
+                }
+            }
             .picks-table .sorted-asc::after { content: " ▲"; }
             .picks-table .sorted-desc::after { content: " ▼"; }
             .picks-table thead th:focus-visible,
@@ -854,6 +946,13 @@ else:
     for idx, p in enumerate(players):
         raw_pct = sim_win_pcts_raw[idx]
         final_root_for.append(root_for_raw[idx])
+        max_locked_opponent = max(
+            (score for other_idx, score in enumerate(locked_pts) if other_idx != idx),
+            default=float("-inf"),
+        )
+        if max_pts[idx] < max_locked_opponent:
+            final_sim_win_pcts.append("None")
+            continue
         if 0 < raw_pct < 0.1:
             final_sim_win_pcts.append("Under 0.1%")
         else:
@@ -968,9 +1067,9 @@ else:
             "(ties split the share). Simulations use ESPN live win probabilities."
         )
 
-        st.subheader("📈 Locked, Simulated and Maximum Points")
+        st.subheader("📈 Locked + Active, Simulated and Maximum Points")
         fig, ax = plt.subplots(figsize=(8, 5))
-        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked', 'Sim Median Pts', 'Max'])
+        plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked + Active', 'Sim Median Pts', 'Max'])
         sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9', '#f39c12'])
         ax.tick_params(axis='y', labelsize=8, pad=2)
         ax.tick_params(axis='x', labelsize=8)
