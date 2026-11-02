@@ -1131,33 +1131,45 @@ else:
             "(ties split the share). Simulations use ESPN live win probabilities."
         )
 
-        st.subheader("📈 Locked + Active, Simulated and Maximum Points")
+        st.subheader(
+            "📈 Locked + Active Pts, Simulation Median Pts, and Maximum Possible"
+        )
         fig, ax = plt.subplots(figsize=(8, 5))
         plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked + Active', 'Sim Median Pts', 'Max'])
+        plot_df['variable'] = plot_df['variable'].map({
+            'Locked + Active': 'Locked + Active Pts',
+            'Sim Median Pts': 'Simulation Median Pts',
+            'Max': 'Maximum Possible',
+        })
         sns.barplot(
             data=plot_df,
             x='value',
             y='Players',
             hue='variable',
-            hue_order=['Max', 'Sim Median Pts', 'Locked + Active'],
+            saturation=1,
+            hue_order=[
+                'Locked + Active Pts',
+                'Simulation Median Pts',
+                'Maximum Possible',
+            ],
             ax=ax,
             palette={
-                'Locked + Active': '#16803c',
-                'Sim Median Pts': '#808080',
-                'Max': '#d3d3d3',
+                'Locked + Active Pts': '#16803c',
+                'Simulation Median Pts': '#808080',
+                'Maximum Possible': '#d3d3d3',
             },
         )
-        ax.tick_params(axis='y', labelsize=8, pad=2)
-        ax.tick_params(axis='x', labelsize=8)
-        ax.set_ylabel('Players', fontsize=9)
-        ax.set_xlabel('Points', fontsize=9)
-        ax.legend(fontsize=8, title_fontsize=8, loc='upper center', bbox_to_anchor=(0.5, 1.16), ncol=3)
+        ax.tick_params(axis='y', labelsize=6, pad=2)
+        ax.tick_params(axis='x', labelsize=7)
+        ax.set_ylabel('Players', fontsize=8)
+        ax.set_xlabel('Points', fontsize=8)
+        ax.legend(fontsize=7, title_fontsize=7, loc='upper center', bbox_to_anchor=(0.5, 1.16), ncol=3)
         
         for label in ax.get_yticklabels():
             label.set_horizontalalignment('right')
 
         for container in ax.containers: 
-            ax.bar_label(container, fmt='%.0f', padding=3, fontsize=7)
+            ax.bar_label(container, fmt='%.0f', padding=3, fontsize=6)
         fig.subplots_adjust(left=0.30, right=0.98, bottom=0.14, top=0.78)
         st.pyplot(fig)
     else:
