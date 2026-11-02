@@ -1139,12 +1139,12 @@ else:
             x='value',
             y='Players',
             hue='variable',
-            hue_order=['Locked + Active', 'Sim Median Pts', 'Max'],
+            hue_order=['Max', 'Sim Median Pts', 'Locked + Active'],
             ax=ax,
             palette={
-                'Locked + Active': '#d3d3d3',
+                'Locked + Active': '#16803c',
                 'Sim Median Pts': '#808080',
-                'Max': '#16803c',
+                'Max': '#d3d3d3',
             },
         )
         ax.tick_params(axis='y', labelsize=8, pad=2)
