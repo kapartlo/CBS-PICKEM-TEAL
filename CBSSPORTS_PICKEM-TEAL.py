@@ -1134,7 +1134,19 @@ else:
         st.subheader("📈 Locked + Active, Simulated and Maximum Points")
         fig, ax = plt.subplots(figsize=(8, 5))
         plot_df = sorted_results.head(15).melt(id_vars=['Players'], value_vars=['Locked + Active', 'Sim Median Pts', 'Max'])
-        sns.barplot(data=plot_df, x='value', y='Players', hue='variable', ax=ax, palette=['#95a5a6', '#00cec9', '#f39c12'])
+        sns.barplot(
+            data=plot_df,
+            x='value',
+            y='Players',
+            hue='variable',
+            hue_order=['Locked + Active', 'Sim Median Pts', 'Max'],
+            ax=ax,
+            palette={
+                'Locked + Active': '#d3d3d3',
+                'Sim Median Pts': '#808080',
+                'Max': '#16803c',
+            },
+        )
         ax.tick_params(axis='y', labelsize=8, pad=2)
         ax.tick_params(axis='x', labelsize=8)
         ax.set_ylabel('Players', fontsize=9)
