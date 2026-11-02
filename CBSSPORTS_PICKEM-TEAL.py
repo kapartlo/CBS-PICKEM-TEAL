@@ -210,7 +210,7 @@ def fetch_espn_nfl_data():
     active_games = 0
     live_leaders = []
     decided_games = set()
-    errors = []
+    errors = [] 
 
     try:
         res = requests.get(url, timeout=5)
