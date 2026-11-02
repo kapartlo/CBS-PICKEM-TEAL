@@ -800,8 +800,8 @@ else:
                 color: #202124 !important;
             }
             .picks-table tbody tr:not(.pinned-row) td:first-child {
-                color: #ffffff !important;
-                background-color: #0e1117 !important;
+                color: #202124 !important;
+                background-color: #ffffff !important;
             }
             .picks-table th:nth-child(1),
             .picks-table td:nth-child(1) {
@@ -886,8 +886,8 @@ else:
                 background-color: #ffffff !important;
             }
             .picks-table tbody tr:not(.pinned-row) td:first-child {
-                color: #ffffff !important;
-                background-color: #0e1117 !important;
+                color: #202124 !important;
+                background-color: #ffffff !important;
             }
             .pick-status {
                 display: inline-block;
