@@ -510,14 +510,27 @@ else:
     favorite_row = blank_row.copy()
     matchup_row[raw_player_col] = ""
     favorite_row[raw_player_col] = ""
+    tie_columns = [
+        column
+        for column in picks_df.columns
+        if "TIE" in str(column).upper()
+    ]
+    for column in tie_columns:
+        tie_matchup = re.fullmatch(
+            r"TIE([A-Z]{2,4})-([A-Z]{2,4})-?",
+            str(column).strip().upper(),
+        )
+        if tie_matchup:
+            matchup_row[column] = (
+                f"{normalize_team_abbreviation(tie_matchup.group(1))} & "
+                f"{normalize_team_abbreviation(tie_matchup.group(2))}"
+            )
     for col, pair in column_matchups.items():
         if pair is not None:
             home, away = pair
             score = CURRENT_SCORES.get(pair)
             if score is not None:
-                matchup_text = f"{home} {score[1]} vs {away} {score[0]}"
-                if pair in LIVE_GAME_STATUS:
-                    matchup_text += f" ({LIVE_GAME_STATUS[pair]})"
+                matchup_text = f"{home} {score[0]}-{away} {score[1]}"
             else:
                 matchup_text = f"{home} vs {away}"
             matchup_row[col] = matchup_text
@@ -568,22 +581,26 @@ else:
                     f"{rank}{get_ordinal_suffix(rank)}  {name}"
                 )
 
-    completed_columns = {
-        column
-        for column, pair in column_matchups.items()
-        if pair is not None and set(pair).issubset(DECIDED_GAMES)
-    }
+    def format_column_header(column):
+        if column == raw_player_col:
+            return "Players"
+        normalized_column = re.sub(r"\.\d+$", "", str(column)).strip().casefold()
+        if str(column).strip().upper().startswith("TIE"):
+            return "Tie Pts"
+        if normalized_column == "pts":
+            return "Locked + Active"
+        if normalized_column == "ytd":
+            return "YTD Locked + Active"
+        pair = column_matchups.get(column)
+        if pair is not None:
+            if set(pair).issubset(DECIDED_GAMES):
+                return "Finished"
+            if pair in LIVE_GAME_STATUS:
+                return LIVE_GAME_STATUS[pair]
+        return re.sub(r"\.\d+$", "", str(column))
+
     display_picks_df.columns = [
-        "Players"
-        if column == raw_player_col
-        else "Locked + Active"
-        if re.sub(r"\.\d+$", "", str(column)).strip().casefold() == "pts"
-        else "YTD Locked + Active"
-        if re.sub(r"\.\d+$", "", str(column)).strip().casefold() == "ytd"
-        else "Final"
-        if column in completed_columns
-        else re.sub(r"\.\d+$", "", str(column))
-        for column in display_picks_df.columns
+        format_column_header(column) for column in display_picks_df.columns
     ]
     for column in ("Players", "Locked + Active", "YTD Locked + Active"):
         if column in display_picks_df:
