@@ -558,6 +558,21 @@ else:
     )
     weekly_points_by_player = dict(zip(players, active_proj))
     ytd_points_by_player = dict(zip(players, ytd_active_totals))
+    if ytd_display_col is not None:
+        for row_index in range(2, len(display_picks_df)):
+            raw_name = display_picks_df.at[row_index, raw_player_col]
+            if pd.isna(raw_name) or str(raw_name).strip() in {"", "-", "NaN"}:
+                continue
+            name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
+            name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
+            if name not in ytd_points_by_player:
+                base_ytd = pd.to_numeric(
+                    display_picks_df.at[row_index, ytd_display_col],
+                    errors="coerce",
+                )
+                ytd_points_by_player[name] = (
+                    int(round(base_ytd)) if pd.notna(base_ytd) else 0
+                )
     player_ranks = dict(
         zip(
             players,
