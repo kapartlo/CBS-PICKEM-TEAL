@@ -454,11 +454,21 @@ else:
         )
     team_matchups = {team: pair for pair in DEFAULT_PAIRING_MAP for team in pair}
     column_matchups = {}
-    for col, teams in column_teams.items():
+    games_have_started = bool(CURRENT_SCORES)
+    for column_index, (col, teams) in enumerate(column_teams.items()):
         matchups = {team_matchups[team] for team in teams if team in team_matchups}
         if len(matchups) > 1:
             DATA_ERRORS.append(f"{col}: picks contain teams from multiple ESPN matchups.")
-        column_matchups[col] = next(iter(matchups)) if len(matchups) == 1 else None
+        if len(matchups) == 1:
+            column_matchups[col] = next(iter(matchups))
+        elif (
+            not teams
+            and not games_have_started
+            and column_index < len(DEFAULT_PAIRING_MAP)
+        ):
+            column_matchups[col] = DEFAULT_PAIRING_MAP[column_index]
+        else:
+            column_matchups[col] = None
     if DATA_ERRORS:
         st.error("Predictions are paused because the matchup or probability data could not be verified.")
         for error in DATA_ERRORS:
