@@ -454,18 +454,13 @@ else:
         )
     team_matchups = {team: pair for pair in DEFAULT_PAIRING_MAP for team in pair}
     column_matchups = {}
-    games_have_started = bool(CURRENT_SCORES)
     for column_index, (col, teams) in enumerate(column_teams.items()):
         matchups = {team_matchups[team] for team in teams if team in team_matchups}
         if len(matchups) > 1:
             DATA_ERRORS.append(f"{col}: picks contain teams from multiple ESPN matchups.")
         if len(matchups) == 1:
             column_matchups[col] = next(iter(matchups))
-        elif (
-            not teams
-            and not games_have_started
-            and column_index < len(DEFAULT_PAIRING_MAP)
-        ):
+        elif not teams and column_index < len(DEFAULT_PAIRING_MAP):
             column_matchups[col] = DEFAULT_PAIRING_MAP[column_index]
         else:
             column_matchups[col] = None
@@ -540,9 +535,9 @@ else:
             home, away = pair
             score = CURRENT_SCORES.get(pair)
             if score is not None:
-                matchup_text = f"{home} {score[0]}-{away} {score[1]}"
+                matchup_text = f"{away} {score[1]} at {home} {score[0]}"
             else:
-                matchup_text = f"{home} vs {away}"
+                matchup_text = f"{away} at {home}"
             matchup_row[col] = matchup_text
             home_probability, away_probability, _ = GAME_PROBABILITIES[pair]
             favorite = home if home_probability >= away_probability else away
