@@ -888,6 +888,14 @@ else:
                     text-overflow: ellipsis;
                 }
             }
+            #weekly-picks-table th:nth-child(n+4),
+            #weekly-picks-table td:nth-child(n+4) {
+                width: max-content;
+                min-width: max-content;
+                max-width: none;
+                white-space: nowrap;
+                overflow-wrap: normal;
+            }
             #weekly-picks-table td.column-heading {
                 text-align: center;
                 font-weight: bold;
