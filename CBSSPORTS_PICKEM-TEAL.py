@@ -1,8 +1,15 @@
 import base64
-from html import escape as html_escape
+from html import escape as escapeHtml
 import io
 import json
 import math
+
+# HTML escaping helper
+def escapeHtml(text, quote=True):
+    """Escape HTML special characters using Python's html.escape."""
+    from html import escape
+    return escape(str(text), quote=quote)
+
 import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -390,13 +397,12 @@ else:
         case=False,
         na=False,
     )
-    valid_player_rows = picks_df.loc[~ghost_player_rows]
 
     for index in range(1, len(picks_df)):
         if ghost_player_rows.iloc[index]:
             continue
         raw_name = picks_df.loc[index, 'Players']
-        if pd.isna(raw_name) or str(raw_name).strip() in ['', '-', 'NaN']: continue
+        if pd.isna(raw_name) or str(raw_name).strip().upper() in ['', '-', 'NAN', 'NONE']: continue
         name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(raw_name)).strip()
         name = re.sub(r'\s+sFie[A-Za-z]*$', '', name).strip()
         
@@ -415,6 +421,12 @@ else:
 
         if len(player_picks) > 0:
             parsed_picks[name] = player_picks
+
+    valid_player_indices = [
+        index for index in range(len(picks_df))
+        if re.sub(r'\s+sFie[A-Za-z]*$', '', re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', str(picks_df.loc[index, 'Players']))).strip() in parsed_picks
+    ]
+    valid_player_rows = picks_df.iloc[valid_player_indices]
 
     (
         COMPLETED_WINNERS,
@@ -474,6 +486,8 @@ else:
 
     locked_pts, active_proj, max_pts, root_for_raw, ytd_totals, ytd_active_totals = [], [], [], [], [], []
     ytd_col = 'YTD' if 'YTD' in picks_df.columns else (picks_df.columns[2] if len(picks_df.columns) > 2 else None)
+    base_ytd_by_player = {}
+    locked_pts_by_player = {}
 
     for p in players:
         row = valid_player_rows[
@@ -483,6 +497,8 @@ else:
 
         locked = sum(parsed_picks[p].get(t, 0) for t in COMPLETED_WINNERS if t in parsed_picks[p])
         locked_pts.append(locked)
+        base_ytd_by_player[p] = base_ytd
+        locked_pts_by_player[p] = locked
 
         ytd_locked_val = int(round(base_ytd + locked))
         ytd_totals.append(ytd_locked_val)
@@ -549,7 +565,7 @@ else:
     display_picks_df = pd.concat(
         [
             pd.DataFrame([matchup_row, favorite_row]),
-            valid_player_rows.iloc[1:],
+            valid_player_rows,
         ],
         ignore_index=True,
     )
@@ -595,12 +611,6 @@ else:
                 display_picks_df.at[row_index, pts_col] = weekly_points_by_player.get(name, 0)
             if ytd_display_col is not None:
                 display_picks_df.at[row_index, ytd_display_col] = ytd_points_by_player.get(name, 0)
-            if name in player_ranks:
-                rank = player_ranks[name]
-                display_picks_df.at[row_index, raw_player_col] = (
-                    f"{rank}{get_ordinal_suffix(rank)}  {name}"
-                )
-
     def format_column_header(column):
         if column == raw_player_col:
             return "Players"
@@ -659,17 +669,28 @@ else:
         else:
             display_value = str(value)
             sort_value = display_value
-        return html_escape(display_value, quote=True), html_escape(sort_value, quote=True)
+        return escapeHtml(display_value, quote=True), escapeHtml(sort_value, quote=True)
 
     table_headers = "".join(
         f'<th scope="col" tabindex="0" data-column="{index}">'
-        f'{"" if index < 3 else html_escape(str(column))}</th>'
+        f'{"" if index < 3 else escapeHtml(str(column))}</th>'
         for index, column in enumerate(display_picks_df.columns)
     )
     table_rows = []
     teams_to_emphasize = set(COMPLETED_WINNERS) | set(LIVE_LEADERS)
     for row_index, row in enumerate(display_picks_df.itertuples(index=False, name=None)):
         cells = []
+        player_name = ""
+        base_locked = 0
+        base_ytd = 0
+        if row_index >= 2:
+            raw_player = str(row[0])
+            player_name = re.sub(r'^\d*(?:st|nd|rd|th)?\s*', '', raw_player).strip()
+            player_name = re.sub(r'\s+sFie[A-Za-z]*$', '', player_name).strip()
+            base_locked = locked_pts_by_player.get(player_name, 0)
+            base_ytd = base_ytd_by_player.get(player_name, 0)
+            base_rank = player_ranks.get(player_name, 1)
+
         for column_index, value in enumerate(row):
             display_value, sort_value = format_pick_cell(value)
             cell_tabindex = ' tabindex="0"' if row_index < 2 else ""
@@ -677,26 +698,73 @@ else:
                 original_column = picks_df.columns[column_index]
                 pair = column_matchups.get(original_column)
                 if pair is not None:
-                    leading_team = next(
-                        (team for team in pair if team in teams_to_emphasize),
+                    home, away = pair
+                    is_decided = set(pair).issubset(DECIDED_GAMES)
+                    score = CURRENT_SCORES.get(pair)
+                    actual_leader = next(
+                        (team for team in pair if team in LIVE_LEADERS),
                         None,
                     )
-                    if leading_team:
-                        escaped_team = html_escape(leading_team, quote=True)
-                        display_value = display_value.replace(
-                            escaped_team,
-                            f"<strong>{escaped_team}</strong>",
-                            1,
+                    if is_decided:
+                        leading_team = next(
+                            (team for team in pair if team in teams_to_emphasize),
+                            None,
                         )
+                        if leading_team:
+                            escaped_team = escapeHtml(leading_team, quote=True)
+                            display_value = display_value.replace(
+                                escaped_team,
+                                f"<strong>{escaped_team}</strong>",
+                                1,
+                            )
+                    else:
+                        away_score_str = f" {score[1]}" if score is not None else ""
+                        home_score_str = f" {score[0]}" if score is not None else ""
+                        away_lead_cls = " live-lead" if actual_leader == away else ""
+                        home_lead_cls = " live-lead" if actual_leader == home else ""
+                        display_value = (
+                            f'<div class="matchup-selector" data-col="{column_index}" '
+                            f'data-away="{away}" data-home="{home}" '
+                            f'data-live-leader="{actual_leader or ""}">'
+                            f'<button type="button" class="whatif-team-btn{away_lead_cls}" '
+                            f'data-team="{away}" data-col="{column_index}" '
+                            f'title="Click to simulate {away} win">{away}{away_score_str}</button>'
+                            f'<span class="matchup-at"> at </span>'
+                            f'<button type="button" class="whatif-team-btn{home_lead_cls}" '
+                            f'data-team="{home}" data-col="{column_index}" '
+                            f'title="Click to simulate {home} win">{home}{home_score_str}</button>'
+                            f'</div>'
+                        )
+            elif row_index >= 2 and column_index == 0:
+                cells.append(
+                    f'<td data-sort="{sort_value}" data-col-type="player" '
+                    f'data-player-name="{escapeHtml(player_name, quote=True)}">'
+                    f'<span class="rank-badge">{base_rank}{get_ordinal_suffix(base_rank)}</span>  '
+                    f'<span class="player-name">{escapeHtml(player_name, quote=True)}</span></td>'
+                )
+                continue
+            elif row_index >= 2 and column_index == 1:
+                cells.append(
+                    f'<td data-sort="{sort_value}" data-col-type="weekly-pts">{display_value}</td>'
+                )
+                continue
+            elif row_index >= 2 and column_index == 2:
+                cells.append(
+                    f'<td data-sort="{sort_value}" data-col-type="ytd-pts">{display_value}</td>'
+                )
+                continue
             elif row_index >= 2 and column_index >= 3:
                 original_column = picks_df.columns[column_index]
                 pair = column_matchups.get(original_column)
                 pick_match = re.fullmatch(
-                    r"\s*([A-Za-z]{2,4})\s*\(\s*\d+\s*\)\s*",
+                    r"\s*([A-Za-z]{2,4})\s*\(\s*(\d+)\s*\)\s*",
                     str(value),
                 )
+                pick_attrs = ""
                 if pair is not None and pick_match:
                     picked_team = normalize_team_abbreviation(pick_match.group(1))
+                    picked_pts = int(pick_match.group(2))
+                    pick_attrs = f' data-col="{column_index}" data-team="{picked_team}" data-pts="{picked_pts}"'
                     score = CURRENT_SCORES.get(pair)
                     if (
                         picked_team in pair
@@ -737,6 +805,12 @@ else:
                             'title="Your pick is currently leading" '
                             'aria-label="Your pick is currently leading">&#9650;</span>'
                         )
+                    else:
+                        display_value += ' <span class="pick-status"></span>'
+                cells.append(
+                    f'<td{pick_attrs} data-sort="{sort_value}">{display_value}</td>'
+                )
+                continue
             if row_index == 1 and column_index < 3:
                 cells.append(
                     f'<td class="column-heading" tabindex="0" data-sort="{sort_value}">'
@@ -746,10 +820,27 @@ else:
             cells.append(
                 f'<td{cell_tabindex} data-sort="{sort_value}">{display_value}</td>'
             )
-        row_class = ' class="pinned-row"' if row_index < 2 else ""
-        table_rows.append(f"<tr{row_class}>{''.join(cells)}</tr>")
+        if row_index < 2:
+            row_class = ' class="pinned-row"'
+            row_attrs = ""
+        else:
+            row_class = ' class="player-row"'
+            row_attrs = (
+                f' data-player="{escapeHtml(player_name, quote=True)}" '
+                f'data-base-rank="{base_rank}" '
+                f'data-base-locked="{base_locked}" data-base-ytd="{base_ytd}"'
+            )
+        table_rows.append(f"<tr{row_class}{row_attrs}>{''.join(cells)}</tr>")
 
     matrix_html = f"""
+        <div class="whatif-toolbar" id="whatif-toolbar" style="display:none;">
+            <div>
+                <span style="font-size: 1rem; margin-right: 4px;">⚡</span>
+                <strong>What-If Simulation Active:</strong>
+                <span id="whatif-summary" style="margin-left: 6px;">0 games simulated</span>
+            </div>
+            <button type="button" id="whatif-reset-btn" title="Clear all simulated picks and return to live scores">Reset to Live Scores</button>
+        </div>
         <div class="picks-table-scroll weekly-picks-scroll">
             <table class="picks-table weekly-picks-table" id="weekly-picks-table">
                 <thead><tr>{table_headers}</tr></thead>
@@ -759,6 +850,128 @@ else:
     """
     matrix_code = """
         <style>
+            .whatif-toolbar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                background: #f0fdf4;
+                border: 1px solid #86efac;
+                color: #166534;
+                padding: 6px 14px;
+                border-radius: 6px;
+                font-size: 0.84rem;
+                margin-bottom: 8px;
+                box-sizing: border-box;
+            }
+            .whatif-toolbar button {
+                background: #ffffff;
+                border: 1px solid #16a34a;
+                color: #15803d;
+                padding: 3px 10px;
+                border-radius: 4px;
+                font-weight: 600;
+                font-size: 0.8rem;
+                cursor: pointer;
+                transition: all 0.15s ease;
+            }
+            .whatif-toolbar button:hover {
+                background: #15803d;
+                color: #ffffff;
+            }
+            .matchup-selector {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 3px;
+                font-size: 0.82rem;
+                white-space: nowrap;
+            }
+            .matchup-at {
+                font-size: 0.76rem;
+                color: #64748b;
+                padding: 0 1px;
+            }
+            .whatif-team-btn {
+                display: inline-block;
+                padding: 2px 5px;
+                margin: 0;
+                font-size: 0.78rem;
+                font-family: inherit;
+                font-weight: 600;
+                line-height: 1.2;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+                background: #f8fafc;
+                color: #1e293b;
+                cursor: pointer;
+                transition: all 0.15s ease-in-out;
+                user-select: none;
+                vertical-align: middle;
+            }
+            .whatif-team-btn:hover {
+                background: #e2e8f0;
+                border-color: #94a3b8;
+            }
+            .whatif-team-btn.live-lead {
+                font-weight: 800;
+                border-color: #16803c;
+                background: #f0fdf4;
+                color: #15803d;
+            }
+            .whatif-team-btn.whatif-selected {
+                background: #007791 !important;
+                border-color: #005f73 !important;
+                color: #ffffff !important;
+                font-weight: 800 !important;
+                box-shadow: 0 1px 3px rgba(0, 119, 145, 0.3);
+            }
+            .whatif-team-btn.whatif-dimmed {
+                opacity: 0.45;
+                background: #f1f5f9;
+                color: #94a3b8;
+                border-color: #e2e8f0;
+            }
+            .picks-table tbody tr.pinned-row:nth-child(1) td.col-whatif-active {
+                background-color: #e0f2fe !important;
+            }
+            .picks-table tbody tr.pinned-row:nth-child(1) td {
+                padding: 0.2rem 0.4rem;
+            }
+            .rank-badge {
+                display: inline-block;
+                min-width: 2.1rem;
+                font-weight: 700;
+                color: #1e293b;
+            }
+            .rank-badge.sim-active {
+                color: #007791 !important;
+                font-weight: 800 !important;
+            }
+            .rank-delta {
+                display: inline-block;
+                padding: 1px 4px;
+                font-size: 0.72rem;
+                font-weight: 700;
+                border-radius: 3px;
+                line-height: 1.1;
+                margin-right: 3px;
+                vertical-align: middle;
+            }
+            .rank-delta.rank-up {
+                color: #15803d;
+                background: #dcfce7;
+                border: 1px solid #86efac;
+            }
+            .rank-delta.rank-down {
+                color: #b91c1c;
+                background: #fee2e2;
+                border: 1px solid #fca5a5;
+            }
+            .rank-delta.rank-same {
+                color: #64748b;
+                background: #f1f5f9;
+                border: 1px solid #cbd5e1;
+            }
             .picks-table-scroll { width: 100%; height: 560px; overflow: auto; }
             .weekly-picks-scroll { overflow-x: auto; }
             .picks-table {
@@ -952,60 +1165,300 @@ else:
         </style>
         <script>
             (() => {
-                const table = document.getElementById("weekly-picks-table");
-                if (!table) return;
-                const body = table.tBodies[0];
-                const directions = new Map([[1, "desc"], [2, "desc"]]);
-                const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
-                const headers = Array.from(table.tHead.rows[0].cells);
-                const sortIndicators = [
-                    ...headers.slice(3),
-                    body.rows[1].cells[0],
-                    body.rows[1].cells[1],
-                    body.rows[1].cells[2],
-                ];
-                sortIndicators[sortIndicators.length - 2].classList.add("sorted-desc");
-                sortIndicators[sortIndicators.length - 1].classList.add("sorted-desc");
-                const sortColumn = (index) => {
-                    const previous = directions.get(index);
-                    const direction = previous ? (previous === "desc" ? "asc" : "desc") : "asc";
-                    directions.clear();
-                    directions.set(index, direction);
-                    sortIndicators.forEach((item) => item.classList.remove("sorted-asc", "sorted-desc"));
-                    const indicator = index < 3 ? body.rows[1].cells[index] : headers[index];
-                    indicator.classList.add(`sorted-${direction}`);
-                    const rows = Array.from(body.rows).slice(2);
-                    rows.sort((left, right) => {
-                        const a = left.cells[index].dataset.sort || "";
-                        const b = right.cells[index].dataset.sort || "";
-                        if (!a && b) return 1;
-                        if (a && !b) return -1;
-                        const comparison = collator.compare(a, b);
-                        return direction === "asc" ? comparison : -comparison;
+                const initWhatIfTable = () => {
+                    const table = document.getElementById("weekly-picks-table");
+                    if (!table) {
+                        setTimeout(initWhatIfTable, 50);
+                        return;
+                    }
+                    const body = table.tBodies[0];
+                    if (!body || body.rows.length < 2) return;
+                    const headerRow = table.tHead.rows[0];
+                    const headers = Array.from(headerRow.cells);
+                    const pinnedRow0 = body.rows[0];
+                    const pinnedRow1 = body.rows[1];
+                    const playerRows = Array.from(body.rows).slice(2).filter((row) => {
+                        const p = (row.dataset.player || "").trim().toLowerCase();
+                        return p && p !== "nan" && p !== "none";
                     });
-                    rows.forEach((row) => body.appendChild(row));
-                };
-                const sortableCells = [
-                    ...headers.slice(3),
-                    ...Array.from(body.rows).slice(0, 2).flatMap((row) => Array.from(row.cells)),
-                ];
-                sortableCells.forEach((cell) => {
-                    cell.addEventListener("click", () => sortColumn(cell.cellIndex));
-                    cell.addEventListener("keydown", (event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            cell.click();
+                    const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
+                    const directions = new Map([[1, "desc"], [2, "desc"]]);
+
+                    const sortIndicators = [
+                        ...headers.slice(3),
+                        pinnedRow1.cells[0],
+                        pinnedRow1.cells[1],
+                        pinnedRow1.cells[2],
+                    ];
+                    if (sortIndicators.length >= 2) {
+                        sortIndicators[sortIndicators.length - 2].classList.add("sorted-desc");
+                        sortIndicators[sortIndicators.length - 1].classList.add("sorted-desc");
+                    }
+
+                    const whatIfOverrides = new Map();
+                    const liveLeadersByCol = new Map();
+                    pinnedRow0.querySelectorAll(".matchup-selector").forEach((sel) => {
+                        const col = parseInt(sel.dataset.col, 10);
+                        const liveLeader = sel.dataset.liveLeader;
+                        if (liveLeader) {
+                            liveLeadersByCol.set(col, liveLeader);
                         }
                     });
-                });
+
+                    const getOrdinal = (n) => {
+                        const rem100 = n % 100;
+                        if (rem100 >= 11 && rem100 <= 13) return "th";
+                        const last = n % 10;
+                        if (last === 1) return "st";
+                        if (last === 2) return "nd";
+                        if (last === 3) return "rd";
+                        return "th";
+                    };
+
+                    const escapeHtml = (str) =>
+                        String(str)
+                            .replace(/&/g, "&amp;")
+                            .replace(/\\x3c/g, "&lt;")
+                            .replace(/>/g, "&gt;")
+                            .replace(/"/g, "&quot;");
+
+                    let currentSortColumn = 1;
+                    let currentSortDirection = "desc";
+
+                    const applyCurrentSort = () => {
+                        const index = currentSortColumn;
+                        const direction = currentSortDirection;
+                        const rows = Array.from(body.rows).slice(2);
+                        rows.sort((left, right) => {
+                            const a = left.cells[index]?.dataset?.sort ?? "";
+                            const b = right.cells[index]?.dataset?.sort ?? "";
+                            if (!a && b) return 1;
+                            if (a && !b) return -1;
+                            const comparison = collator.compare(a, b);
+                            if (comparison === 0 && index === 1) {
+                                const ytdA = left.cells[2]?.dataset?.sort ?? "";
+                                const ytdB = right.cells[2]?.dataset?.sort ?? "";
+                                const ytdComp = collator.compare(ytdA, ytdB);
+                                return direction === "asc" ? ytdComp : -ytdComp;
+                            }
+                            return direction === "asc" ? comparison : -comparison;
+                        });
+                        rows.forEach((row) => body.appendChild(row));
+                    };
+
+                    const sortColumn = (index) => {
+                        const previous = directions.get(index);
+                        const direction = previous ? (previous === "desc" ? "asc" : "desc") : "asc";
+                        directions.clear();
+                        directions.set(index, direction);
+                        currentSortColumn = index;
+                        currentSortDirection = direction;
+                        sortIndicators.forEach((item) => item.classList.remove("sorted-asc", "sorted-desc"));
+                        const indicator = index < 3 ? pinnedRow1.cells[index] : headers[index];
+                        if (indicator) indicator.classList.add(`sorted-${direction}`);
+                        applyCurrentSort();
+                    };
+
+                    const updateWhatIf = () => {
+                        const toolbar = document.getElementById("whatif-toolbar");
+                        const summary = document.getElementById("whatif-summary");
+                        if (whatIfOverrides.size > 0) {
+                            if (toolbar) toolbar.style.display = "flex";
+                            if (summary) {
+                                const parts = [];
+                                whatIfOverrides.forEach((team) => parts.push(team));
+                                summary.textContent = `${whatIfOverrides.size} game${whatIfOverrides.size > 1 ? "s" : ""} simulated (${parts.join(", ")})`;
+                            }
+                        } else {
+                            if (toolbar) toolbar.style.display = "none";
+                        }
+
+                        pinnedRow0.querySelectorAll(".matchup-selector").forEach((sel) => {
+                            const col = parseInt(sel.dataset.col, 10);
+                            const overridden = whatIfOverrides.get(col);
+                            const liveLeader = liveLeadersByCol.get(col);
+                            const cell = sel.closest("td");
+                            if (cell) {
+                                if (overridden) {
+                                    cell.classList.add("col-whatif-active");
+                                } else {
+                                    cell.classList.remove("col-whatif-active");
+                                }
+                            }
+                            sel.querySelectorAll(".whatif-team-btn").forEach((btn) => {
+                                const team = btn.dataset.team;
+                                btn.classList.remove("whatif-selected", "whatif-dimmed");
+                                if (overridden) {
+                                    if (team === overridden) {
+                                        btn.classList.add("whatif-selected");
+                                    } else {
+                                        btn.classList.add("whatif-dimmed");
+                                    }
+                                } else {
+                                    if (liveLeader && team === liveLeader) {
+                                        btn.classList.add("live-lead");
+                                    } else {
+                                        btn.classList.remove("live-lead");
+                                    }
+                                }
+                            });
+                        });
+
+                        const scoredPlayers = [];
+                        playerRows.forEach((row) => {
+                            const baseLocked = parseFloat(row.dataset.baseLocked || "0");
+                            const baseYtd = parseFloat(row.dataset.baseYtd || "0");
+                            const playerName = row.dataset.player || "";
+                            const baseRank = parseInt(row.dataset.baseRank || "0", 10) || 1;
+                            let weeklyTotal = baseLocked;
+
+                            for (let c = 3; c < row.cells.length; c++) {
+                                const cell = row.cells[c];
+                                const pickedTeam = cell.dataset.team;
+                                const pts = parseFloat(cell.dataset.pts || "0");
+                                if (!pickedTeam || !pts) continue;
+
+                                let winner = null;
+                                let isSimulated = false;
+                                if (whatIfOverrides.has(c)) {
+                                    winner = whatIfOverrides.get(c);
+                                    isSimulated = true;
+                                } else if (liveLeadersByCol.has(c)) {
+                                    winner = liveLeadersByCol.get(c);
+                                }
+
+                                const indicator = cell.querySelector(".pick-status");
+
+                                if (winner) {
+                                    if (pickedTeam === winner) {
+                                        weeklyTotal += pts;
+                                        if (indicator && !indicator.classList.contains("correct") && !indicator.classList.contains("incorrect-final")) {
+                                            indicator.className = "pick-status leading";
+                                            indicator.innerHTML = "&#9650;";
+                                            indicator.title = isSimulated ? "Simulated winner" : "Currently leading";
+                                        }
+                                    } else {
+                                        if (indicator && !indicator.classList.contains("correct") && !indicator.classList.contains("incorrect-final")) {
+                                            indicator.className = "pick-status trailing";
+                                            indicator.innerHTML = "&#9632;";
+                                            indicator.title = isSimulated ? "Simulated loser" : "Currently trailing";
+                                        }
+                                    }
+                                } else {
+                                    if (indicator && !indicator.classList.contains("correct") && !indicator.classList.contains("incorrect-final")) {
+                                        indicator.className = "pick-status";
+                                        indicator.innerHTML = "";
+                                        indicator.title = "";
+                                    }
+                                }
+                            }
+
+                            const ytdTotal = Math.round(baseYtd + weeklyTotal);
+                            row.cells[1].textContent = weeklyTotal.toLocaleString();
+                            row.cells[1].dataset.sort = String(weeklyTotal);
+                            row.cells[2].textContent = ytdTotal.toLocaleString();
+                            row.cells[2].dataset.sort = String(ytdTotal);
+
+                            scoredPlayers.push({
+                                row,
+                                playerName,
+                                baseRank,
+                                weeklyTotal,
+                                ytdTotal,
+                            });
+                        });
+
+                        const sortedForRank = [...scoredPlayers].sort((a, b) => b.weeklyTotal - a.weeklyTotal);
+                        let rank = 1;
+                        for (let i = 0; i < sortedForRank.length; i++) {
+                            if (i > 0 && sortedForRank[i].weeklyTotal < sortedForRank[i - 1].weeklyTotal) {
+                                rank = i + 1;
+                            }
+                            sortedForRank[i].simRank = rank;
+                        }
+
+                        const isSimulating = whatIfOverrides.size > 0;
+
+                        scoredPlayers.forEach((p) => {
+                            const displayRank = isSimulating ? p.simRank : p.baseRank;
+                            const ordinal = getOrdinal(displayRank);
+
+                            if (isSimulating) {
+                                const rankDiff = p.baseRank - p.simRank;
+                                let deltaHtml = "";
+                                if (rankDiff > 0) {
+                                    deltaHtml = `\\x3cspan class="rank-delta rank-up" title="Up ${rankDiff} spot${rankDiff > 1 ? 's' : ''} in weekly standings (Live: ${p.baseRank}${getOrdinal(p.baseRank)} → Sim: ${p.simRank}${ordinal})">▲${rankDiff}\\x3c/span>`;
+                                } else if (rankDiff < 0) {
+                                    const down = -rankDiff;
+                                    deltaHtml = `\\x3cspan class="rank-delta rank-down" title="Down ${down} spot${down > 1 ? 's' : ''} in weekly standings (Live: ${p.baseRank}${getOrdinal(p.baseRank)} → Sim: ${p.simRank}${ordinal})">▼${down}\\x3c/span>`;
+                                } else {
+                                    deltaHtml = `\\x3cspan class="rank-delta rank-same" title="Weekly place unchanged (${displayRank}${ordinal})">-\\x3c/span>`;
+                                }
+                                p.row.cells[0].innerHTML = `\\x3cspan class="rank-badge sim-active" title="Simulated weekly rank">${displayRank}${ordinal}\\x3c/span> ${deltaHtml} \\x3cspan class="player-name">${escapeHtml(p.playerName)}\\x3c/span>`;
+                            } else {
+                                p.row.cells[0].innerHTML = `\\x3cspan class="rank-badge">${displayRank}${ordinal}\\x3c/span>  \\x3cspan class="player-name">${escapeHtml(p.playerName)}\\x3c/span>`;
+                            }
+                            p.row.cells[0].dataset.sort = p.playerName;
+                        });
+
+                        applyCurrentSort();
+                    };
+
+                    pinnedRow0.querySelectorAll(".whatif-team-btn").forEach((btn) => {
+                        btn.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            const col = parseInt(btn.dataset.col, 10);
+                            const team = btn.dataset.team;
+                            if (whatIfOverrides.get(col) === team) {
+                                whatIfOverrides.delete(col);
+                            } else {
+                                whatIfOverrides.set(col, team);
+                            }
+                            updateWhatIf();
+                        });
+                    });
+
+                    const resetBtn = document.getElementById("whatif-reset-btn");
+                    if (resetBtn) {
+                        resetBtn.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            whatIfOverrides.clear();
+                            updateWhatIf();
+                        });
+                    }
+
+                    Array.from(pinnedRow0.cells).forEach((cell) => {
+                        cell.addEventListener("click", (e) => {
+                            if (e.target.closest(".whatif-team-btn")) return;
+                            sortColumn(cell.cellIndex);
+                        });
+                    });
+
+                    sortIndicators.forEach((item) => {
+                        item.addEventListener("click", () => sortColumn(item.cellIndex));
+                        item.addEventListener("keydown", (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                item.click();
+                            }
+                        });
+                    });
+                };
+
+                if (document.readyState === "loading") {
+                    document.addEventListener("DOMContentLoaded", initWhatIfTable);
+                } else {
+                    initWhatIfTable();
+                }
             })();
         </script>
     """
+    matrix_styles, matrix_script = matrix_code.split("<script>", 1)
+    matrix_script = matrix_script.rsplit("</script>", 1)[0]
     with st.expander("📊 View this week's player picks."):
         st.html(
-            f'{matrix_html}{matrix_code}',
+            f'{matrix_html}{matrix_styles}',
             width="stretch",
-            unsafe_allow_javascript=True,
         )
     st.markdown("[View CBSSPORTS PICK'EM Website](https://picks.cbssports.com/football/pickem/pools/kbxw63b2ge3dknrugeytm===)")
 
@@ -1082,7 +1535,7 @@ else:
 
         results_headers = "".join(
             f'<th scope="col" tabindex="0">'
-            f'{html_escape("YTD Locked Rank" if column == "YTD Rank" else str(column))}</th>'
+            f'{escapeHtml("YTD Locked Rank" if column == "YTD Rank" else str(column))}</th>'
             for column in sorted_results.columns
         )
         results_rows = []
@@ -1097,7 +1550,7 @@ else:
                         sort_value = "0.1"
                     else:
                         sort_value = str(value).replace("%", "").replace("\u2007", "").strip()
-                    sort_value = html_escape(sort_value, quote=True)
+                    sort_value = escapeHtml(sort_value, quote=True)
                 cells.append(f'<td data-sort="{sort_value}">{display_value}</td>')
             results_rows.append(f"<tr>{''.join(cells)}</tr>")
         results_colgroup = "".join(
@@ -1149,8 +1602,10 @@ else:
                 })();
             </script>
         """
+        results_sorting_script = results_sorting.split("<script>", 1)[1].rsplit("</script>", 1)[0]
         st.html(
-            f"{results_html}{matrix_code.split('<script>', 1)[0]}{results_sorting}",
+            f"{results_html}{matrix_styles}"
+            f"<script>{matrix_script}{results_sorting_script}</script>",
             width="stretch",
             unsafe_allow_javascript=True,
         )
@@ -1202,3 +1657,9 @@ else:
         st.pyplot(fig)
     else:
         st.warning("No player picks could be parsed from the uploaded spreadsheet.")
+
+# HTML escaping helper
+def escapeHtml(text, quote=True):
+    """Escape HTML special characters."""
+    from html import escape
+    return escape(str(text), quote=quote)
