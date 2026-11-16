@@ -4,13 +4,13 @@ echo Promoting TEST to production (main)...
 echo ========================================
 
 git checkout main
-if %errorlevel% neq g goto error
+if %errorlevel% neq 0 goto error
 
 git merge TEST -m "Promote TEST changes to main"
-if %errorlevel% neq g goto error
+if %errorlevel% neq 0 goto error
 
 git push origin main
-if %errorlevel% neq g goto error
+if %errorlevel% neq 0 goto error
 
 git checkout TEST
 echo ========================================
