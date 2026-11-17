@@ -3,6 +3,7 @@ from html import escape as escapeHtml
 import io
 import json
 import math
+from itertools import product
 
 # HTML escaping helper
 def escapeHtml(text, quote=True):
@@ -203,6 +204,103 @@ def simulate_weekly_results(players, parsed_picks, locked_points, pairing_map, d
     win_shares = (weekly_points == top_scores) / np.sum(weekly_points == top_scores, axis=0)
     first_place_shares = np.sum(win_shares, axis=1) / n_sims * 100
     return weekly_points, first_place_shares
+
+def get_weekly_root_recommendations(players, parsed_picks, locked_points, pairing_map, decided_teams, game_probabilities):
+    remaining_pairs = [pair for pair in pairing_map if pair[0] not in decided_teams]
+    if not players or not 1 <= len(remaining_pairs) <= 3:
+        return None
+
+    possible_outcomes = []
+    modeled_outcomes = []
+    for pair in remaining_pairs:
+        home_probability, away_probability, tie_probability = game_probabilities[pair]
+        outcomes = [pair[0], pair[1]]
+        modeled = [(pair[0], home_probability), (pair[1], away_probability)]
+        if tie_probability > 0:
+            outcomes.append(None)
+            modeled.append((None, tie_probability))
+        possible_outcomes.append(outcomes)
+
+        positive_outcomes = [(winner, probability) for winner, probability in modeled if probability > 0]
+        probability_total = sum(probability for _, probability in positive_outcomes)
+        if not math.isfinite(probability_total) or probability_total <= 0:
+            raise ValueError(f"{pair}: no valid outcome probabilities for rooting recommendations.")
+        modeled_outcomes.append([
+            (winner, probability / probability_total)
+            for winner, probability in positive_outcomes
+        ])
+
+    def first_place_shares(outcomes):
+        scores = np.asarray(locked_points, dtype=float).copy()
+        for pair, winner in zip(remaining_pairs, outcomes):
+            if winner is None:
+                continue
+            scores += np.asarray(
+                [parsed_picks[player].get(winner, 0) for player in players],
+                dtype=float,
+            )
+        leaders = scores == np.max(scores)
+        return leaders / np.sum(leaders)
+
+    possible_scenarios = [
+        (outcomes, first_place_shares(outcomes))
+        for outcomes in product(*possible_outcomes)
+    ]
+    recommendations = [None] * len(players)
+    for player_index in range(len(players)):
+        can_finish_first = any(
+            shares[player_index] > 0
+            for _, shares in possible_scenarios
+        )
+        if not can_finish_first:
+            continue
+
+        player = players[player_index]
+        player_recommendations = []
+        for game_index, pair in enumerate(remaining_pairs):
+            conditional_shares = []
+            other_game_indices = [
+                index for index in range(len(remaining_pairs))
+                if index != game_index
+            ]
+            for recommended_winner in possible_outcomes[game_index]:
+                weighted_share = 0.0
+                other_outcomes = [modeled_outcomes[index] for index in other_game_indices]
+                for other_results in product(*other_outcomes):
+                    outcomes = [None] * len(remaining_pairs)
+                    outcomes[game_index] = recommended_winner
+                    weight = 1.0
+                    for index, (winner, probability) in zip(other_game_indices, other_results):
+                        outcomes[index] = winner
+                        weight *= probability
+                    weighted_share += weight * first_place_shares(outcomes)[player_index]
+                conditional_shares.append((recommended_winner, weighted_share))
+
+            conditional_shares.sort(key=lambda result: result[1], reverse=True)
+            best_winner, best_share = conditional_shares[0]
+            second_share = conditional_shares[1][1] if len(conditional_shares) > 1 else best_share
+            advantage = best_share - second_share
+            if advantage <= 1e-12:
+                player_recommendations.append({
+                    "team": None,
+                    "points": None,
+                    "contrary": False,
+                    "has_preference": False,
+                })
+                continue
+
+            player_pick = next(
+                (team for team in pair if team in parsed_picks[player]),
+                None,
+            )
+            player_recommendations.append({
+                "team": best_winner,
+                "points": parsed_picks[player].get(player_pick, 0) if player_pick else 0,
+                "contrary": player_pick is not None and player_pick != best_winner,
+                "has_preference": True,
+            })
+        recommendations[player_index] = player_recommendations
+    return recommendations
 
 @st.cache_data(ttl=60)
 def fetch_espn_nfl_data():
@@ -1473,15 +1571,45 @@ else:
         N_SIMS,
         st.session_state["simulation_seed"],
     )
+    root_recommendations = get_weekly_root_recommendations(
+        players,
+        parsed_picks,
+        locked_pts,
+        DEFAULT_PAIRING_MAP,
+        DECIDED_GAMES,
+        GAME_PROBABILITIES,
+    )
 
     median_scores = np.round(np.median(weekly_points, axis=1)).astype(int) if n_players > 0 else []
 
     final_root_for = []
+    root_for_bold_by_player = {}
     final_sim_win_pcts = []
 
     for idx, p in enumerate(players):
         raw_pct = sim_win_pcts_raw[idx]
-        final_root_for.append(root_for_raw[idx])
+        recommendation = root_recommendations[idx] if root_recommendations else None
+        if recommendation:
+            root_labels = []
+            root_html = []
+            for item in recommendation:
+                if item["has_preference"]:
+                    label = item["team"] or "Tie"
+                    points = 0 if item["contrary"] else item["points"]
+                    label = f"{label}({points})"
+                else:
+                    label = "No preference"
+                root_labels.append(label)
+                safe_label = escapeHtml(label, quote=True)
+                root_html.append(
+                    f"<strong>{safe_label}</strong>"
+                    if item["contrary"]
+                    else safe_label
+                )
+            final_root_for.append(", ".join(root_labels))
+            root_for_bold_by_player[p] = ", ".join(root_html)
+        else:
+            final_root_for.append(root_for_raw[idx])
         max_locked_opponent = max(
             (score for other_idx, score in enumerate(locked_pts) if other_idx != idx),
             default=float("-inf"),
@@ -1513,6 +1641,11 @@ else:
         sim_results['Players'] = sim_results.apply(
             lambda row: f"{row['Wk Rank']}{get_ordinal_suffix(row['Wk Rank'])}  {row['Player']}", axis=1
         )
+        root_for_html_by_display_name = {
+            display_name: root_for_bold_by_player[player]
+            for player, display_name in zip(sim_results['Player'], sim_results['Players'])
+            if player in root_for_bold_by_player
+        }
         
         sorted_results = sim_results.sort_values(
             by=['Locked + Active', 'YTD Locked'],
@@ -1551,10 +1684,15 @@ else:
                     else:
                         sort_value = str(value).replace("%", "").replace("\u2007", "").strip()
                     sort_value = escapeHtml(sort_value, quote=True)
+                elif sorted_results.columns[column_index] == "Root For":
+                    display_value = root_for_html_by_display_name.get(
+                        str(result_row[0]),
+                        display_value,
+                    )
                 cells.append(f'<td data-sort="{sort_value}">{display_value}</td>')
             results_rows.append(f"<tr>{''.join(cells)}</tr>")
         results_colgroup = "".join(
-            f'<col style="width:{"250px" if index == 0 else "140px" if index == 1 else "110px"}">'
+            f'<col style="width:{"250px" if index == 0 else "250px" if index == len(sorted_results.columns) - 1 else "140px" if index == 1 else "110px"}">'
             for index in range(len(sorted_results.columns))
         )
         results_html = f"""
@@ -1611,7 +1749,10 @@ else:
         )
         st.caption(
             "Sim First-Place Share is each player's share of first place across 10,000 weekly simulations "
-            "(ties split the share). Simulations use ESPN live win probabilities."
+            "(ties split the share). Simulations use ESPN live win probabilities. "
+            "With 3 or fewer games left, Root For lists the preferred outcomes for contenders. "
+            "A bold 0 means the recommended outcome goes against that player's pick. "
+            "Eliminated players still see their highest-point picks."
         )
 
         st.subheader(
