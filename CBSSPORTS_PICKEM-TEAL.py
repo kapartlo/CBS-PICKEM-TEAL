@@ -36,6 +36,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+DEFAULT_PICKS_SPREADSHEET_ID = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"
+
 @st.cache_data(ttl=600)
 def load_excel_from_gdrive():
     try:
@@ -48,7 +50,13 @@ def load_excel_from_gdrive():
             temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
         )
         service = build("drive", "v3", credentials=creds)
-        request = service.files().get_media(fileId="1by3okDqhmsITMO5Nig326OKOtJm-8Jw0")
+        spreadsheet_id = st.secrets.get(
+            "picks_spreadsheet_id",
+            DEFAULT_PICKS_SPREADSHEET_ID,
+        )
+        if not isinstance(spreadsheet_id, str) or not spreadsheet_id.strip():
+            raise ValueError("The picks_spreadsheet_id Streamlit secret must be a non-empty string.")
+        request = service.files().get_media(fileId=spreadsheet_id.strip())
         file_buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(file_buffer, request)
         done = False
@@ -473,6 +481,45 @@ def fetch_espn_nfl_data():
         errors,
     )
 
+def should_show_picks_pending_message(
+    total_games,
+    scheduled_game_count,
+    parsed_picks,
+    pick_parse_errors,
+    data_errors,
+    mismatched_pick_columns,
+    populated_pick_columns,
+    mismatched_pick_players,
+):
+    if (
+        total_games <= 0
+        or scheduled_game_count < max(1, math.ceil(total_games * 0.75))
+        or pick_parse_errors
+    ):
+        return False
+
+    pending_pick_error_fragments = (
+        "picks contain teams from multiple ESPN matchups.",
+        "picks do not match ESPN teams:",
+        "picked both ",
+    )
+    pending_errors_only = all(
+        any(fragment in error for fragment in pending_pick_error_fragments)
+        or error.startswith("The spreadsheet has ")
+        for error in data_errors
+    )
+    if not parsed_picks:
+        return pending_errors_only
+    minimum_mismatched_columns = max(3, math.ceil(populated_pick_columns * 0.6))
+    minimum_mismatched_players = max(1, math.ceil(len(parsed_picks) * 0.5))
+    if (
+        mismatched_pick_columns < minimum_mismatched_columns
+        or mismatched_pick_players < minimum_mismatched_players
+    ):
+        return False
+
+    return bool(data_errors) and pending_errors_only
+
 st.title("Teal CBS Sports Pick'em")
 st.session_state.setdefault("simulation_seed", 42)
 if st.button("REFRESH"):
@@ -548,13 +595,18 @@ else:
             f"The spreadsheet has {total_games} game columns, but ESPN returned {len(DEFAULT_PAIRING_MAP)} matchups."
         )
     scheduled_teams = set(TEAM_PROBABILITIES)
+    mismatched_pick_players = 0
     for player, player_picks in parsed_picks.items():
         unknown_teams = sorted(set(player_picks) - scheduled_teams)
+        player_has_mismatch = bool(unknown_teams)
         if unknown_teams:
             DATA_ERRORS.append(f"{player}: picks do not match ESPN teams: {', '.join(unknown_teams)}.")
         for home_team, away_team in DEFAULT_PAIRING_MAP:
             if home_team in player_picks and away_team in player_picks:
                 DATA_ERRORS.append(f"{player}: picked both {home_team} and {away_team} in one matchup.")
+                player_has_mismatch = True
+        if player_has_mismatch:
+            mismatched_pick_players += 1
     missing_forecasts = [pair for pair in DEFAULT_PAIRING_MAP if pair not in GAME_PROBABILITIES]
     if missing_forecasts:
         DATA_ERRORS.append(
@@ -574,7 +626,39 @@ else:
             column_matchups[col] = DEFAULT_PAIRING_MAP[column_index]
         else:
             column_matchups[col] = None
-    if DATA_ERRORS:
+
+    mismatched_pick_columns = sum(
+        bool(teams)
+        and (
+            any(team not in team_matchups for team in teams)
+            or len({team_matchups[team] for team in teams if team in team_matchups}) > 1
+        )
+        for teams in column_teams.values()
+    )
+    populated_pick_columns = sum(bool(teams) for teams in column_teams.values())
+    if should_show_picks_pending_message(
+        total_games,
+        len(DEFAULT_PAIRING_MAP),
+        parsed_picks,
+        pick_parse_errors,
+        DATA_ERRORS,
+        mismatched_pick_columns,
+        populated_pick_columns,
+        mismatched_pick_players,
+    ):
+        if parsed_picks:
+            message = (
+                "The spreadsheet still appears to contain last week's picks. "
+                "This week's picks haven't been loaded yet; refresh after they're entered."
+            )
+        else:
+            message = (
+                "This week's picks haven't been entered in the spreadsheet yet. "
+                "Refresh after they're loaded."
+            )
+        st.info(message, title="Waiting for this week's picks")
+        st.stop()
+    elif DATA_ERRORS:
         st.error("Predictions are paused because the matchup or probability data could not be verified.")
         for error in DATA_ERRORS:
             st.write(f"- {error}")
