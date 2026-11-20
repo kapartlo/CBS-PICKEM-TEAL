@@ -40,9 +40,11 @@ DEFAULT_PICKS_SPREADSHEET_ID = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"
 
 @st.cache_data(ttl=600)
 def load_excel_from_gdrive(spreadsheet_id):
+    service_account_email = None
     try:
         creds_json = base64.b64decode(st.secrets["gdrive_b64"]).decode("utf-8")
         creds_dict = json.loads(creds_json)
+        service_account_email = creds_dict.get("client_email")
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as temp:
             json.dump(creds_dict, temp)
             temp_path = temp.name
@@ -63,7 +65,11 @@ def load_excel_from_gdrive(spreadsheet_id):
         file_buffer.seek(0)
         return pd.read_excel(file_buffer, sheet_name=0), file_metadata
     except Exception as e:
-        st.error(f"Error loading Excel from Google Drive: {e}")
+        st.error("Unable to load the configured spreadsheet from Google Drive.")
+        with st.expander("Drive access diagnostics"):
+            st.write(f"Requested file ID suffix: {spreadsheet_id[-6:]}")
+            st.write(f"Service account email: {service_account_email or 'Unavailable'}")
+            st.code(str(e))
         return None, None
 
 def american_odds_to_probability(odds):
