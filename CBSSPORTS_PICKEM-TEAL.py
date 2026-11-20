@@ -51,16 +51,20 @@ def load_excel_from_gdrive(spreadsheet_id):
         )
         service = build("drive", "v3", credentials=creds)
         request = service.files().get_media(fileId=spreadsheet_id.strip())
+        file_metadata = service.files().get(
+            fileId=spreadsheet_id.strip(),
+            fields="id,name,modifiedTime",
+        ).execute()
         file_buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(file_buffer, request)
         done = False
         while not done:
             _, done = downloader.next_chunk()
         file_buffer.seek(0)
-        return pd.read_excel(file_buffer, sheet_name=0)
+        return pd.read_excel(file_buffer, sheet_name=0), file_metadata
     except Exception as e:
         st.error(f"Error loading Excel from Google Drive: {e}")
-        return None
+        return None, None
 
 def american_odds_to_probability(odds):
     try:
@@ -529,7 +533,7 @@ picks_spreadsheet_id = st.secrets.get(
 if not isinstance(picks_spreadsheet_id, str) or not picks_spreadsheet_id.strip():
     st.error("The picks_spreadsheet_id Streamlit secret must be a non-empty string.")
     st.stop()
-picks_df = load_excel_from_gdrive(picks_spreadsheet_id.strip())
+picks_df, spreadsheet_metadata = load_excel_from_gdrive(picks_spreadsheet_id.strip())
 
 if picks_df is None:
     st.error("Failed to load Excel data from Google Drive. Please check your secrets configuration and internet connection.")
@@ -658,6 +662,26 @@ else:
                 "Refresh after they're loaded."
             )
         st.info(message, title="Waiting for this week's picks")
+        with st.expander("Data diagnostics"):
+            metadata = spreadsheet_metadata or {}
+            file_id = metadata.get("id", "")
+            st.write(f"Drive file: {metadata.get('name', 'Unknown')}")
+            st.write(f"Drive file ID suffix: {file_id[-6:] if file_id else 'Unknown'}")
+            st.write(f"Last modified in Drive: {metadata.get('modifiedTime', 'Unknown')}")
+            st.write(f"Spreadsheet game columns: {total_games}")
+            st.write(f"ESPN matchups: {len(DEFAULT_PAIRING_MAP)}")
+            st.write(f"Pick columns with values: {populated_pick_columns}/{total_games}")
+            st.write(f"Columns with matchup conflicts: {mismatched_pick_columns}")
+            st.write(f"Players with team conflicts: {mismatched_pick_players}/{len(parsed_picks)}")
+            st.write(f"Pick parsing errors: {len(pick_parse_errors)}")
+            st.write(
+                "Unknown-team pick errors: "
+                f"{sum('picks do not match ESPN teams:' in error for error in DATA_ERRORS)}"
+            )
+            st.write(
+                "Picked-both-sides errors: "
+                f"{sum('picked both ' in error for error in DATA_ERRORS)}"
+            )
         st.stop()
     elif DATA_ERRORS:
         st.error("Predictions are paused because the matchup or probability data could not be verified.")
