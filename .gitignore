@@ -1,3 +1,5 @@
 .streamlit/secrets.toml
+.env
+oddsapikey.env
 test.bat
 .vscode/tasks.json
