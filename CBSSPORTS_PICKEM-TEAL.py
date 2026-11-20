@@ -39,7 +39,7 @@ st.markdown("""
 DEFAULT_PICKS_SPREADSHEET_ID = "1by3okDqhmsITMO5Nig326OKOtJm-8Jw0"
 
 @st.cache_data(ttl=600)
-def load_excel_from_gdrive():
+def load_excel_from_gdrive(spreadsheet_id):
     try:
         creds_json = base64.b64decode(st.secrets["gdrive_b64"]).decode("utf-8")
         creds_dict = json.loads(creds_json)
@@ -50,12 +50,6 @@ def load_excel_from_gdrive():
             temp_path, scopes=["https://www.googleapis.com/auth/drive.readonly"]
         )
         service = build("drive", "v3", credentials=creds)
-        spreadsheet_id = st.secrets.get(
-            "picks_spreadsheet_id",
-            DEFAULT_PICKS_SPREADSHEET_ID,
-        )
-        if not isinstance(spreadsheet_id, str) or not spreadsheet_id.strip():
-            raise ValueError("The picks_spreadsheet_id Streamlit secret must be a non-empty string.")
         request = service.files().get_media(fileId=spreadsheet_id.strip())
         file_buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(file_buffer, request)
@@ -528,7 +522,14 @@ if st.button("REFRESH"):
     st.session_state["simulation_seed"] += 1
     st.rerun()
 
-picks_df = load_excel_from_gdrive()
+picks_spreadsheet_id = st.secrets.get(
+    "picks_spreadsheet_id",
+    DEFAULT_PICKS_SPREADSHEET_ID,
+)
+if not isinstance(picks_spreadsheet_id, str) or not picks_spreadsheet_id.strip():
+    st.error("The picks_spreadsheet_id Streamlit secret must be a non-empty string.")
+    st.stop()
+picks_df = load_excel_from_gdrive(picks_spreadsheet_id.strip())
 
 if picks_df is None:
     st.error("Failed to load Excel data from Google Drive. Please check your secrets configuration and internet connection.")
